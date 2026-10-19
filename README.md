@@ -21,6 +21,12 @@ The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
 
 Test the helper against the stand-in game with `testsun.ps1` (see `tests/README.md`).
 
+## Developer console
+
+`--dev` makes the helper check `multiplayer/runtime/devcmd.txt` in the game folder once a second. The whole file is run
+as one Lua chunk in the game (in the level's environment, like the `lua` command) and then deleted. Each result is
+appended to `multiplayer/runtime/devout.txt`. It is off by default. `docs/api-findings.md` lists what was learned with it.
+
 ## Lobby mode (in progress for 0.4.0)
 
 `CPC-Multiplayer.exe lobby` starts the game first and lets you pick afterwards. Type these in the window, or write them
