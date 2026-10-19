@@ -4,17 +4,69 @@ using System.Text;
 
 namespace CpcMultiplayer;
 
+internal enum UiKind
+{
+	Info,
+	Good,
+	Warn,
+	Error,
+	Player,
+	Step
+}
+
+// Where status lines go: the console today, an in-game overlay later.
+internal interface IUiSink
+{
+	void Write(UiKind kind, string text);
+
+	// How to tell the player to run a command, e.g. "type 'refresh'" or "press Refresh".
+	string Command(string command);
+}
+
+internal sealed class ConsoleSink : IUiSink
+{
+	public void Write(UiKind kind, string text)
+	{
+		ConsoleColor foregroundColor = Console.ForegroundColor;
+		Console.ForegroundColor = kind switch
+		{
+			UiKind.Good => ConsoleColor.Green,
+			UiKind.Warn => ConsoleColor.Yellow,
+			UiKind.Error => ConsoleColor.Red,
+			UiKind.Player => ConsoleColor.Cyan,
+			UiKind.Step => ConsoleColor.White,
+			_ => ConsoleColor.Gray,
+		};
+		Console.WriteLine((kind == UiKind.Step) ? (">> " + text) : text);
+		Console.ForegroundColor = foregroundColor;
+	}
+
+	public string Command(string command)
+	{
+		return "type '" + command + "'";
+	}
+}
+
 internal static class Ui
 {
 	private static readonly object consoleLock = new object();
 
 	private static StreamWriter logFile;
 
+	public static IUiSink Sink = new ConsoleSink();
+
 	public static void Banner()
 	{
-		Write(ConsoleColor.Cyan, "=== Car Park Capital Multiplayer " + Program.Version + " ===");
-		Write(ConsoleColor.DarkGray, "Co-op building mod. Keep this window open while you play.");
-		Console.WriteLine();
+		lock (consoleLock)
+		{
+			ConsoleColor foregroundColor = Console.ForegroundColor;
+			Console.ForegroundColor = ConsoleColor.Cyan;
+			Console.WriteLine("=== Car Park Capital Multiplayer " + Program.Version + " ===");
+			Console.ForegroundColor = ConsoleColor.DarkGray;
+			Console.WriteLine("Co-op building mod. Keep this window open while you play.");
+			Console.ForegroundColor = foregroundColor;
+			Console.WriteLine();
+		}
 	}
 
 	public static void OpenLog(string path)
@@ -42,49 +94,51 @@ internal static class Ui
 		}
 	}
 
-	private static void Write(ConsoleColor color, string text)
+	private static void Write(UiKind kind, string text)
 	{
 		lock (consoleLock)
 		{
-			ConsoleColor foregroundColor = Console.ForegroundColor;
-			Console.ForegroundColor = color;
-			Console.WriteLine(text);
-			Console.ForegroundColor = foregroundColor;
+			Sink.Write(kind, text);
 			if (logFile != null)
 			{
-				logFile.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " " + text);
+				logFile.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " " + ((kind == UiKind.Step) ? (">> " + text) : text));
 			}
 		}
 	}
 
+	public static string Command(string command)
+	{
+		return Sink.Command(command);
+	}
+
 	public static void Info(string text)
 	{
-		Write(ConsoleColor.Gray, text);
+		Write(UiKind.Info, text);
 	}
 
 	public static void Good(string text)
 	{
-		Write(ConsoleColor.Green, text);
+		Write(UiKind.Good, text);
 	}
 
 	public static void Warn(string text)
 	{
-		Write(ConsoleColor.Yellow, text);
+		Write(UiKind.Warn, text);
 	}
 
 	public static void Error(string text)
 	{
-		Write(ConsoleColor.Red, text);
+		Write(UiKind.Error, text);
 	}
 
 	public static void Player(string text)
 	{
-		Write(ConsoleColor.Cyan, text);
+		Write(UiKind.Player, text);
 	}
 
 	public static void Step(string text)
 	{
-		Write(ConsoleColor.White, ">> " + text);
+		Write(UiKind.Step, text);
 	}
 
 	public static string Ask(string question, string defaultValue)
@@ -117,7 +171,8 @@ internal static class Ui
 		Info("  [3] Uninstall the mod");
 		while (true)
 		{
-			switch (Ask("Choose 1, 2 or 3", null))
+			string text = Ask("Choose 1, 2 or 3", null);
+			switch (text)
 			{
 			case "1":
 				return "host";
@@ -125,6 +180,8 @@ internal static class Ui
 				return "join";
 			case "3":
 				return "uninstall";
+			case null:
+				return null;
 			}
 		}
 	}

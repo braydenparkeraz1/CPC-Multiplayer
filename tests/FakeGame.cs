@@ -8,6 +8,7 @@
 //   save   save the city again
 //   exit   close the game
 // Environment: FAKEGAME_IGNORE_LEAVE=1 ignores "leave" (tests the helper's force-close).
+// fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "leave: closing".
 using System;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -129,7 +130,9 @@ internal static class FakeGame
 				Log("msg " + id + " " + type);
 				if (type == "hello")
 				{
-					Emit("hello", "{\"role\":\"x\",\"context\":\"" + context + "\",\"version\":\"" + Version + "\"}");
+					string role = Regex.Match(m.Groups[3].Value, "\\[\"role\"\\]=\"(\\w+)\"").Groups[1].Value;
+					Log("hello role=" + role);
+					Emit("hello", "{\"role\":\"" + role + "\",\"context\":\"" + context + "\",\"version\":\"" + Version + "\"}");
 				}
 				else if (type == "loadworld")
 				{

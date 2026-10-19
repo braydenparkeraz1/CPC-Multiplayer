@@ -18,7 +18,26 @@ internal class Session
 
 	private readonly Options opts;
 
-	private readonly bool isHost;
+	private readonly Settings settings;
+
+	private enum Role
+	{
+		// The game is running but the player hasn't picked host or join yet (or a session ended).
+		Lobby,
+		Host,
+		Client
+	}
+
+	private Role role;
+
+	// Started in the lobby: after a session ends the player gets back there instead of the helper exiting.
+	private readonly bool lobbyMode;
+
+	private bool isHost => role == Role.Host;
+
+	private bool isClient => role == Role.Client;
+
+	private DateTime levelEnteredAt = DateTime.MinValue;
 
 	// A new id (and inbox) per game launch, so a relaunched game never replays the old inbox.
 	private string sessionId = Util.NewId();
@@ -146,7 +165,7 @@ internal class Session
 	{
 		get
 		{
-			if (gameReady && gameContext == "level")
+			if (gameReady && gameContext == "level" && role != Role.Lobby)
 			{
 				if (!isHost)
 				{
@@ -172,11 +191,18 @@ internal class Session
 
 	private bool GameRunning => DateTime.UtcNow - lastHeartbeat < TimeSpan.FromSeconds(1.6);
 
-	public Session(string gameDir, Options opts)
+	public Session(string gameDir, Options opts, Settings settings)
 	{
 		this.gameDir = gameDir;
 		this.opts = opts;
-		isHost = opts.Mode == "host";
+		this.settings = settings;
+		lobbyMode = opts.Mode == "lobby";
+		role = opts.Mode switch
+		{
+			"host" => Role.Host,
+			"join" => Role.Client,
+			_ => Role.Lobby,
+		};
 		inbox = new Inbox(gameDir, sessionId);
 	}
 
@@ -211,28 +237,15 @@ internal class Session
 				return 1;
 			}
 		}
-		else if (!Connect())
+		else if (isClient && !Connect())
 		{
 			Ui.PressEnter();
 			return 1;
 		}
 		SendHello();
-		if (isHost && !string.IsNullOrEmpty(opts.City))
+		if (isHost)
 		{
-			string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(opts.City);
-			if (Regex.IsMatch(fileNameWithoutExtension, "^[A-Za-z0-9_-]+$") && File.Exists(Path.Combine(gameDir, "saves", fileNameWithoutExtension + ".cpcp")))
-			{
-				inbox.Add("loadworld", new Dictionary<string, object> {
-				{
-					"path",
-					"saves/" + fileNameWithoutExtension + ".cpcp"
-				} });
-				pendingCityFile = fileNameWithoutExtension + ".cpcp";
-			}
-			else
-			{
-				Ui.Warn("No save named '" + opts.City + "' in the game's saves folder; load your city in the game instead.");
-			}
+			QueueCityLoad();
 		}
 		inbox.Flush();
 		game.Line += delegate(string line)
@@ -252,7 +265,17 @@ internal class Session
 		thread.IsBackground = true;
 		Thread thread2 = thread;
 		thread2.Start();
-		PrintHelp();
+		if (opts.ControlFile != null)
+		{
+			Thread controlThread = new Thread(ReadControlFile);
+			controlThread.IsBackground = true;
+			controlThread.Start();
+		}
+		if (role != Role.Lobby)
+		{
+			// In the lobby the help comes with the main-menu hint, once the game is up.
+			PrintHelp();
+		}
 		while (!quit)
 		{
 			if (work.TryTake(out var item, 100))
@@ -317,13 +340,41 @@ internal class Session
 		return 0;
 	}
 
+	// Host only: --city loads that save in the game straight away.
+	private void QueueCityLoad()
+	{
+		if (string.IsNullOrEmpty(opts.City))
+		{
+			return;
+		}
+		string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(opts.City);
+		if (Regex.IsMatch(fileNameWithoutExtension, "^[A-Za-z0-9_-]+$") && File.Exists(Path.Combine(gameDir, "saves", fileNameWithoutExtension + ".cpcp")))
+		{
+			inbox.Add("loadworld", new Dictionary<string, object> {
+			{
+				"path",
+				"saves/" + fileNameWithoutExtension + ".cpcp"
+			} });
+			pendingCityFile = fileNameWithoutExtension + ".cpcp";
+		}
+		else
+		{
+			Ui.Warn("No save named '" + opts.City + "' in the game's saves folder; load your city in the game instead.");
+		}
+	}
+
 	private void SendHello()
 	{
 		inbox.Add("hello", new Dictionary<string, object>
 		{
 			{
 				"role",
-				isHost ? "host" : "client"
+				role switch
+				{
+					Role.Host => "host",
+					Role.Client => "client",
+					_ => "lobby",
+				}
 			},
 			{ "name", opts.Name },
 			{ "autosave", opts.AutosaveSeconds }
@@ -332,6 +383,7 @@ internal class Session
 
 	private void OnGameExited()
 	{
+		bool closeRequested = closeRequestedAt != DateTime.MinValue;
 		gameExited = true;
 		gameReady = false;
 		gameContext = "closed";
@@ -347,6 +399,14 @@ internal class Session
 		{
 			relaunchAfterExit = false;
 			Ui.Step("Restarting your game. You rejoin when the host loads a city.");
+			Relaunch();
+			return;
+		}
+		if (lobbyMode && closeRequested && role != Role.Host)
+		{
+			// We closed the game because the session ended; the player picks again at the main menu.
+			ReturnToLobby(sendHello: false);
+			Ui.Step("Restarting your game at the main menu.");
 			Relaunch();
 			return;
 		}
@@ -367,8 +427,195 @@ internal class Session
 		worldPending = true;
 		gameExited = false;
 		gameContext = "starting";
-		relaunched = true;
+		relaunched = isClient;
 		game.Start(gameDir, sessionId);
+	}
+
+	// Lobby: start hosting. The city is the one the game has open, or the next one it loads.
+	private void BeginHost()
+	{
+		if (role != Role.Lobby)
+		{
+			Ui.Warn("You're already in a session. To end it, " + Ui.Command("leave") + ".");
+			return;
+		}
+		if (!StartHosting())
+		{
+			return;
+		}
+		role = Role.Host;
+		eventLog.Clear();
+		toGame.Clear();
+		tileLog.Clear();
+		tilesToApply.Clear();
+		landLog.Clear();
+		landToApply.Clear();
+		worldRequests.Clear();
+		SendHello();
+		if (gameContext == "level")
+		{
+			// Saves made since the level opened count as this city.
+			cityLoadedAt = levelEnteredAt;
+			cityFile = null;
+			Ui.Good("Sharing the city you have open. Friends can join now.");
+			if (gameReady)
+			{
+				locateAttempts = 0;
+				StartTileSync();
+			}
+		}
+		else
+		{
+			QueueCityLoad();
+			if (gameContext == "menu" && string.IsNullOrEmpty(opts.City))
+			{
+				Ui.Step("In the game, load the city you want to share (or start a new one).");
+			}
+		}
+	}
+
+	// Lobby: join a host. On failure we stay in the lobby.
+	private void BeginJoin(string address)
+	{
+		if (role != Role.Lobby)
+		{
+			Ui.Warn("You're already in a session. To end it, " + Ui.Command("leave") + ".");
+			return;
+		}
+		address = string.IsNullOrEmpty(address) ? settings.LastHost : address;
+		if (string.IsNullOrEmpty(address))
+		{
+			Ui.Warn("Usage: join <ip[:port]>");
+			return;
+		}
+		opts.Address = address;
+		if (!opts.AllowSecondInstance)
+		{
+			DeleteWorldSaves();
+		}
+		if (!Connect())
+		{
+			return;
+		}
+		role = Role.Client;
+		kicked = false;
+		worldPending = true;
+		loadingHostCity = false;
+		hostCityRoom = -1;
+		relaunched = false;
+		toGame.Clear();
+		tilesToApply.Clear();
+		landToApply.Clear();
+		SendHello();
+	}
+
+	// Ends the session we're in. The host keeps its city open; a client in the host's city closes
+	// its game, which restarts at the main menu.
+	private void Leave()
+	{
+		if (role == Role.Lobby)
+		{
+			Ui.Info("You're not in a session.");
+			return;
+		}
+		if (!lobbyMode)
+		{
+			Ui.Info("Use 'quit' to end the session.");
+			return;
+		}
+		if (isHost)
+		{
+			SayBye();
+			if (listener != null)
+			{
+				listener.Stop();
+				listener = null;
+			}
+			Peer[] array = peers.ToArray();
+			foreach (Peer peer in array)
+			{
+				peer.Close();
+			}
+			peers.Clear();
+			worldRequests.Clear();
+			StopTileSync();
+			role = Role.Lobby;
+			cityLoadedAt = DateTime.MinValue;
+			cityFile = null;
+			pendingCityFile = null;
+			SendHello();
+			Ui.Good("You stopped hosting. Your city stays open and is no longer shared.");
+			PrintHelp();
+			return;
+		}
+		Ui.Info("Leaving the host's game.");
+		hostGone = true;
+		Peer oldHost = host;
+		host = null;
+		if (oldHost != null)
+		{
+			oldHost.Close();
+		}
+		EndClientSession();
+	}
+
+	// Lobby mode, client whose session is over (host gone or we left): close the game if it has
+	// the host's city open or is loading it, otherwise go straight back to the lobby.
+	private void EndClientSession()
+	{
+		LeaveHostCity();
+		if (loadingHostCity)
+		{
+			// The game already took the loadworld; it ends up in the host's city, so close it.
+			RequestGameClose(relaunch: false);
+		}
+		if (closeRequestedAt == DateTime.MinValue)
+		{
+			ReturnToLobby(sendHello: true);
+		}
+	}
+
+	// Client: back to picking host or join. Our game no longer has the host's city open.
+	private void ReturnToLobby(bool sendHello)
+	{
+		role = Role.Lobby;
+		if (host != null)
+		{
+			Peer oldHost = host;
+			host = null;
+			oldHost.Close();
+		}
+		hostGone = false;
+		kicked = false;
+		worldPending = true;
+		loadingHostCity = false;
+		hostCityRoom = -1;
+		relaunched = false;
+		relaunchAfterExit = false;
+		toGame.Clear();
+		tilesToApply.Clear();
+		landToApply.Clear();
+		StopTileSync();
+		if (sendHello)
+		{
+			SendHello();
+		}
+		Ui.Step("Back in the lobby.");
+		PrintHelp();
+	}
+
+	private void SayBye()
+	{
+		// Tell everyone the session is over, so their games close instead of carrying on alone.
+		Peer[] joined = peers.Where((Peer p) => p.Hello).ToArray();
+		foreach (Peer peer in joined)
+		{
+			peer.Send(new Dictionary<string, object> { { "t", "bye" } });
+		}
+		foreach (Peer peer in joined)
+		{
+			peer.Drain(TimeSpan.FromSeconds(2.0));
+		}
 	}
 
 	private void Shutdown()
@@ -379,16 +626,7 @@ internal class Session
 		}
 		if (isHost)
 		{
-			// Tell everyone the session is over, so their games close instead of carrying on alone.
-			Peer[] joined = peers.Where((Peer p) => p.Hello).ToArray();
-			foreach (Peer peer in joined)
-			{
-				peer.Send(new Dictionary<string, object> { { "t", "bye" } });
-			}
-			foreach (Peer peer in joined)
-			{
-				peer.Drain(TimeSpan.FromSeconds(2.0));
-			}
+			SayBye();
 		}
 		work.CompleteAdding();
 		if (listener != null)
@@ -487,7 +725,7 @@ internal class Session
 				}
 				else if (attempt >= MaxLocateAttempts)
 				{
-					Ui.Warn("Roads and floors won't sync live (" + tiles.Status + "). Objects still sync; use 'refresh' for roads.");
+					Ui.Warn("Roads and floors won't sync live (" + tiles.Status + "). Objects still sync; for roads, " + Ui.Command("refresh") + ".");
 				}
 				else
 				{
@@ -665,7 +903,50 @@ internal class Session
 
 	private void PrintHelp()
 	{
-		Ui.Info("Commands: say <message> | players | refresh" + (isHost ? "" : " | reconnect") + " | status | quit");
+		if (role == Role.Lobby)
+		{
+			Ui.Info("Commands: host | join <ip[:port]>" + ((settings.LastHost != null) ? (" (last: " + settings.LastHost + ")") : "") + " | name <name> (now " + opts.Name + ") | status | quit");
+			return;
+		}
+		Ui.Info("Commands: say <message> | players | refresh" + (isHost ? "" : " | reconnect") + " | status" + (lobbyMode ? " | leave" : "") + " | quit");
+	}
+
+	private void ReadControlFile()
+	{
+		while (!work.IsAddingCompleted)
+		{
+			Thread.Sleep(100);
+			string[] lines;
+			try
+			{
+				if (!File.Exists(opts.ControlFile))
+				{
+					continue;
+				}
+				lines = File.ReadAllLines(opts.ControlFile);
+				File.Delete(opts.ControlFile);
+			}
+			catch (IOException)
+			{
+				continue;
+			}
+			catch (UnauthorizedAccessException)
+			{
+				continue;
+			}
+			foreach (string line in lines)
+			{
+				string cmd = line.Trim();
+				if (cmd.Length != 0)
+				{
+					Ui.Log("control: " + cmd);
+					Post(delegate
+					{
+						OnCommand(cmd);
+					});
+				}
+			}
+		}
 	}
 
 	private void ReadCommands()
@@ -695,8 +976,39 @@ internal class Session
 		string text2 = ((cmd.Length > text.Length) ? cmd.Substring(text.Length).Trim() : "");
 		switch (text)
 		{
+		case "host":
+			BeginHost();
+			break;
+		case "join":
+			BeginJoin(text2);
+			break;
+		case "leave":
+			Leave();
+			break;
+		case "name":
+			if (role != Role.Lobby)
+			{
+				Ui.Warn("Change your name before hosting or joining.");
+			}
+			else if (text2.Length == 0)
+			{
+				Ui.Info("Your name: " + opts.Name);
+			}
+			else
+			{
+				opts.Name = Util.CleanName(text2);
+				settings.Name = opts.Name;
+				settings.Save();
+				SendHello();
+				Ui.Info("Your name: " + opts.Name);
+			}
+			break;
 		case "say":
-			if (text2.Length != 0)
+			if (role == Role.Lobby)
+			{
+				Ui.Warn("You're not in a session yet.");
+			}
+			else if (text2.Length != 0)
 			{
 				Dictionary<string, object> dictionary = new Dictionary<string, object>();
 				dictionary.Add("t", "chat");
@@ -723,18 +1035,27 @@ internal class Session
 			{
 				host.Send(new Dictionary<string, object> { { "t", "players?" } });
 			}
+			else
+			{
+				Ui.Info("You're not in a session.");
+			}
 			break;
 		case "refresh":
 			if (isHost)
 			{
-				Ui.Info("Friends can type 'refresh' in their window to reload your city (picks up roads and floors).");
+				Ui.Info("Friends can use 'refresh' on their side to reload your city (picks up roads and floors).");
+				break;
+			}
+			if (!isClient)
+			{
+				Ui.Info("You're not in a session.");
 				break;
 			}
 			Ui.Warn("Your game will reload the host's city. Roads and floors you built yourself are replaced by the host's.");
 			RequestWorld();
 			break;
 		case "reconnect":
-			if (!isHost)
+			if (isClient)
 			{
 				if (host != null)
 				{
@@ -748,6 +1069,11 @@ internal class Session
 			break;
 		case "status":
 			Ui.Info(string.Format("Game: {0}{1}{2}. Waiting to send to game: {3}.", gameContext, gameReady ? " (syncing)" : "", gamePaused ? ", paused" : "", toGame.Count));
+			if (role == Role.Lobby)
+			{
+				Ui.Info("Not in a session: " + Ui.Command("host") + " or " + Ui.Command("join <ip>") + ".");
+				break;
+			}
 			Ui.Info("Roads and floors: " + tiles.Status + " (map " + tiles.Size + ").");
 			if (!isHost)
 			{
@@ -843,11 +1169,20 @@ internal class Session
 					RequestGameClose(!hostGone);
 				}
 			}
-			if (gameContext == "menu" && isHost && (string.IsNullOrEmpty(opts.City) || roomSeq > 1))
+			if (gameContext == "level")
+			{
+				levelEnteredAt = DateTime.UtcNow;
+			}
+			if (gameContext == "menu" && role == Role.Lobby)
+			{
+				Ui.Step("The game is at the main menu. Host your city or join a friend.");
+				PrintHelp();
+			}
+			else if (gameContext == "menu" && isHost && (string.IsNullOrEmpty(opts.City) || roomSeq > 1))
 			{
 				Ui.Step("In the game, load the city you want to share (or start a new one).");
 			}
-			else if (gameContext == "menu" && !isHost && relaunched)
+			else if (gameContext == "menu" && isClient && relaunched)
 			{
 				relaunched = false;
 				if (host != null && !host.Closed)
@@ -880,6 +1215,11 @@ internal class Session
 			}
 			gameReady = true;
 			SetMapSize(Util.Dict(d2, "map"));
+			if (role == Role.Lobby)
+			{
+				Ui.Log("city ready in the lobby, not shared");
+				break;
+			}
 			if (!isHost)
 			{
 				if (kicked && InHostCity)
@@ -888,7 +1228,7 @@ internal class Session
 				}
 				if (worldSaveName == null || !InHostCity)
 				{
-					Ui.Warn((worldSaveName == null) ? "This isn't the host's city; waiting for it to arrive." : ("This isn't the host's city, so nothing you do here is shared. Type 'refresh' to load the host's city."));
+					Ui.Warn((worldSaveName == null) ? "This isn't the host's city; waiting for it to arrive." : ("This isn't the host's city, so nothing you do here is shared. To load the host's city, " + Ui.Command("refresh") + "."));
 					break;
 				}
 				worldPending = false;
@@ -928,7 +1268,7 @@ internal class Session
 		case "blocked":
 		{
 			string text2 = Util.Str(d2, "key") ?? "?";
-			Ui.Warn("Couldn't place a friend's " + text2.Split('@')[0] + ": something is in the way in your city (type 'refresh' to resync).");
+			Ui.Warn("Couldn't place a friend's " + text2.Split('@')[0] + ": something is in the way in your city (to resync, " + Ui.Command("refresh") + ").");
 			break;
 		}
 		case "error":
@@ -1023,10 +1363,15 @@ internal class Session
 			host.Close();
 		}
 		Ui.Error(reason + " You're disconnected.");
+		if (lobbyMode)
+		{
+			EndClientSession();
+			return;
+		}
 		LeaveHostCity();
 		if (closeRequestedAt == DateTime.MinValue && !loadingHostCity)
 		{
-			Ui.Info("Type 'reconnect' to try again, or 'quit'.");
+			Ui.Info("To try again, " + Ui.Command("reconnect") + ". To stop, " + Ui.Command("quit") + ".");
 		}
 	}
 
@@ -1440,7 +1785,7 @@ internal class Session
 					"Waiting for " + opts.Name + " to save their city..."
 				}
 			});
-			Ui.Warn(p.Name + " needs your city: press Esc > Save in the game, then they can type 'refresh'.");
+			Ui.Warn(p.Name + " needs your city: press Esc > Save in the game, then they can use 'refresh'.");
 			return;
 		}
 		byte[] array = File.ReadAllBytes(fileInfo.FullName);
@@ -1484,13 +1829,22 @@ internal class Session
 
 	private bool Connect()
 	{
-		string text = opts.Address;
+		string text = (opts.Address ?? "").Trim();
 		int num = opts.Port;
 		int num2 = text.LastIndexOf(':');
 		if (num2 > 0 && text.IndexOf(':') == num2)
 		{
-			num = int.Parse(text.Substring(num2 + 1));
+			if (!int.TryParse(text.Substring(num2 + 1), out num) || num <= 0 || num > 65535)
+			{
+				Ui.Error("'" + text + "' isn't a valid address. Use an IP or IP:port, e.g. 192.168.1.20:" + opts.Port + ".");
+				return false;
+			}
 			text = text.Substring(0, num2);
+		}
+		if (text.Length == 0)
+		{
+			Ui.Error("No host address given.");
+			return false;
 		}
 		Ui.Step($"Connecting to {text}:{num}...");
 		TcpClient tcpClient;
@@ -1561,6 +1915,8 @@ internal class Session
 		case "welcome":
 			host.Version = Util.Str(m, "version");
 			Ui.Good("Connected to " + Util.CleanName(Util.Str(m, "host")) + "'s game.");
+			settings.RememberHost(opts.Address);
+			settings.Save();
 			if (host.Version != Program.Version)
 			{
 				Ui.Warn("The host has mod version " + host.Version + ", you have " + Program.Version + ".");
@@ -1580,7 +1936,7 @@ internal class Session
 			ReceiveWorld(m);
 			break;
 		case "noworld":
-			Ui.Warn("The host has no saved city yet. Ask them to save (Esc > Save), then type 'refresh'.");
+			Ui.Warn("The host has no saved city yet. Ask them to save (Esc > Save), then " + Ui.Command("refresh") + ".");
 			break;
 		case "ev":
 		{
@@ -1638,12 +1994,12 @@ internal class Session
 		}
 		catch (FormatException)
 		{
-			Ui.Error("The host's city arrived damaged. Type 'refresh' to try again.");
+			Ui.Error("The host's city arrived damaged. To try again, " + Ui.Command("refresh") + ".");
 			return;
 		}
 		if (array.Length < 16)
 		{
-			Ui.Error("The host's city arrived empty. Type 'refresh' to try again.");
+			Ui.Error("The host's city arrived empty. To try again, " + Ui.Command("refresh") + ".");
 			return;
 		}
 		string text = Util.CleanName(Util.Str(m, "host")).Replace(' ', '_');

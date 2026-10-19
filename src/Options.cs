@@ -18,6 +18,9 @@ internal class Options
 
 	public string City;
 
+	// A file the helper polls for commands (one per line, deleted after reading), like typing them.
+	public string ControlFile;
+
 	public static Options Parse(string[] args)
 	{
 		Options options = new Options();
@@ -43,6 +46,13 @@ internal class Options
 				break;
 			case "uninstall":
 				options.Mode = "uninstall";
+				break;
+			case "lobby":
+				options.Mode = "lobby";
+				break;
+			case "--control":
+				options.ControlFile = text2;
+				i++;
 				break;
 			case "--port":
 				options.Port = int.Parse(text2);

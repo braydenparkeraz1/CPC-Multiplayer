@@ -8,14 +8,37 @@ by decompiling it with ILSpy; that is the first commit. The Lua files in `lua/` 
 
 ## Build
 
-With the .NET SDK installed:
+```
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
 
-```
-dotnet build -c Release
-```
+This builds `CPC-Multiplayer.exe` and the stand-in game into `.testrunin` (git-ignored). With the .NET SDK installed it
+runs `dotnet build -c Release`; without it, it downloads Roslyn (`Microsoft.Net.Compilers.Toolset`) once into
+`.testrun	ools` and compiles against the .NET Framework 4 assemblies in the Windows folder, using any installed .NET runtime.
 
 The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
 .NET Framework apps can't start from a path longer than 260 characters ("This application could not be started").
+
+Test the helper against the stand-in game with `testsun.ps1` (see `tests/README.md`).
+
+## Lobby mode (in progress for 0.4.0)
+
+`CPC-Multiplayer.exe lobby` starts the game first and lets you pick afterwards. Type these in the window, or write them
+to the file given with `--control <file>`:
+
+| Command | Effect |
+|---|---|
+| `host` | Share your city: the one open in the game, or the next one you load |
+| `join [ip[:port]]` | Join a host; without an address, the last one that worked |
+| `name <name>` | Change your name (lobby only) |
+| `leave` | End the session and go back to the lobby. A host keeps its city open; a client's game restarts at the main menu |
+
+When the host leaves or closes the game, clients go back to the lobby instead of the helper exiting. Closing the game
+in the lobby ends the helper. `host` and `join` on the command line work as before.
+
+The helper remembers your name and the last 5 host addresses that connected in `multiplayer/settings.json` in the game
+folder. On first run the name defaults to your Steam profile name (from Steam's `config/loginusers.vdf`), then your
+Windows user name.
 
 ## Changes in 0.3.0
 
@@ -40,10 +63,11 @@ The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
 
 | File | Role |
 |---|---|
-| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`), console menu |
+| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`), console menu; `Ui` writes status lines to a sink (the console today) |
+| `src/Settings.cs`, `SteamName.cs` | `multiplayer/settings.json` (name, recent hosts); the Steam profile name as the default name |
 | `src/GameInstall.cs` | Finds the game (Steam library or parent folders), copies the Lua files in, and patches 3 game scripts between `-- [cpc-multiplayer] begin/end` markers |
 | `src/GameProcess.cs` | Starts `carparkcapital.exe -mpsession <id>`, reads its stdout, force-closes it |
-| `src/Session.cs` | Core logic: host/join over TCP, routing events between game and network, sending the save file to joiners, ending the session when the host leaves |
+| `src/Session.cs` | Core logic: lobby, host/join over TCP, routing events between game and network, sending the save file to joiners, ending the session when the host leaves |
 | `src/Peer.cs` | One TCP connection: newline-delimited JSON, queued sends, liveness |
 | `src/Inbox.cs`, `Lua.cs` | Writes `multiplayer/runtime/inbox_<id>.lua`, the helper→game message channel |
 | `src/TileSync.cs`, `Native.cs` | Roads/floors/land sync by reading and writing the game's memory (`ReadProcessMemory`/`WriteProcessMemory`) |
@@ -54,7 +78,8 @@ The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; runs the repaint queue; reports the map size |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
-| `tests/FakeGame.cs` | Stand-in for the game, for testing the helper's networking without it (see `tests/README.md`) |
+| `tests/FakeGame.cs`, `run.ps1` | Stand-in for the game and the scenario runner, for testing the helper's networking without it (see `tests/README.md`) |
+| `build.ps1` | Builds the helper and the stand-in game into `.testrunin` |
 
 ## Network protocol
 

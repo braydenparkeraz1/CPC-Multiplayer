@@ -97,20 +97,24 @@ internal static class GameInstall
 		return null;
 	}
 
+	public static string SteamPath()
+	{
+		string[] array = new string[2] { "HKEY_CURRENT_USER\\Software\\Valve\\Steam", "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Valve\\Steam" };
+		foreach (string text in array)
+		{
+			object value = Registry.GetValue(text, text.StartsWith("HKEY_CURRENT_USER") ? "SteamPath" : "InstallPath", null);
+			if (value != null)
+			{
+				return value.ToString().Replace('/', '\\');
+			}
+		}
+		return null;
+	}
+
 	private static IEnumerable<string> SteamLibraries()
 	{
 		List<string> list = new List<string>();
-		string text = null;
-		string[] array = new string[2] { "HKEY_CURRENT_USER\\Software\\Valve\\Steam", "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Valve\\Steam" };
-		foreach (string text2 in array)
-		{
-			object value = Registry.GetValue(text2, text2.StartsWith("HKEY_CURRENT_USER") ? "SteamPath" : "InstallPath", null);
-			if (value != null)
-			{
-				text = value.ToString().Replace('/', '\\');
-				break;
-			}
-		}
+		string text = SteamPath();
 		if (text == null)
 		{
 			return list;
