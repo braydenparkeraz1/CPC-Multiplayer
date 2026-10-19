@@ -12,14 +12,14 @@ by decompiling it with ILSpy; that is the first commit. The Lua files in `lua/` 
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-This builds `CPC-Multiplayer.exe` and the stand-in game into `.testrunin` (git-ignored). With the .NET SDK installed it
+This builds `CPC-Multiplayer.exe` and the stand-in game into `.testrun\bin` (git-ignored). With the .NET SDK installed it
 runs `dotnet build -c Release`; without it, it downloads Roslyn (`Microsoft.Net.Compilers.Toolset`) once into
-`.testrun	ools` and compiles against the .NET Framework 4 assemblies in the Windows folder, using any installed .NET runtime.
+`.testrun\tools` and compiles against the .NET Framework 4 assemblies in the Windows folder, using any installed .NET runtime.
 
 The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
 .NET Framework apps can't start from a path longer than 260 characters ("This application could not be started").
 
-Test the helper against the stand-in game with `testsun.ps1` (see `tests/README.md`).
+Test the helper against the stand-in game with `tests\run.ps1` (see `tests/README.md`).
 
 ## Developer console
 
@@ -85,7 +85,7 @@ Windows user name.
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
 | `tests/FakeGame.cs`, `run.ps1` | Stand-in for the game and the scenario runner, for testing the helper's networking without it (see `tests/README.md`) |
-| `build.ps1` | Builds the helper and the stand-in game into `.testrunin` |
+| `build.ps1` | Builds the helper and the stand-in game into `.testrun\bin` |
 
 ## Network protocol
 
