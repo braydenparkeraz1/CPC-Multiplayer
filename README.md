@@ -63,7 +63,7 @@ Windows user name.
 
 | File | Role |
 |---|---|
-| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`), console menu; `Ui` writes status lines to a sink (the console today) |
+| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`), console menu; `Ui` writes status lines to a sink (the console today) |
 | `src/Settings.cs`, `SteamName.cs` | `multiplayer/settings.json` (name, recent hosts); the Steam profile name as the default name |
 | `src/GameInstall.cs` | Finds the game (Steam library or parent folders), copies the Lua files in, and patches 3 game scripts between `-- [cpc-multiplayer] begin/end` markers |
 | `src/GameProcess.cs` | Starts `carparkcapital.exe -mpsession <id>`, reads its stdout, force-closes it |

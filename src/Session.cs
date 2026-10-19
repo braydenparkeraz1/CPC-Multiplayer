@@ -271,6 +271,13 @@ internal class Session
 			controlThread.IsBackground = true;
 			controlThread.Start();
 		}
+		if (opts.Dev)
+		{
+			Thread devThread = new Thread(ReadDevCommands);
+			devThread.IsBackground = true;
+			devThread.Start();
+			Ui.Warn("Developer console on: Lua in " + DevPath("devcmd.txt") + " runs in the game.");
+		}
 		if (role != Role.Lobby)
 		{
 			// In the lobby the help comes with the main-menu hint, once the game is up.
@@ -949,6 +956,62 @@ internal class Session
 		}
 	}
 
+	private string DevPath(string file)
+	{
+		return Path.Combine(gameDir, "multiplayer", "runtime", file);
+	}
+
+	// --dev: the whole of devcmd.txt is one Lua chunk, sent as an eval (like the "lua" command).
+	// Lets someone who can't play the game probe it while a player has a city open.
+	private void ReadDevCommands()
+	{
+		string path = DevPath("devcmd.txt");
+		while (!work.IsAddingCompleted)
+		{
+			Thread.Sleep(1000);
+			string code;
+			try
+			{
+				if (!File.Exists(path))
+				{
+					continue;
+				}
+				code = File.ReadAllText(path);
+				File.Delete(path);
+			}
+			catch (IOException)
+			{
+				continue;
+			}
+			catch (UnauthorizedAccessException)
+			{
+				continue;
+			}
+			if (code.Trim().Length == 0)
+			{
+				continue;
+			}
+			Ui.Log("dev: eval " + code.Length + " chars");
+			Post(delegate
+			{
+				inbox.Add("eval", new Dictionary<string, object> { { "code", code } });
+			});
+		}
+	}
+
+	private void WriteDevOutput(Dictionary<string, object> result)
+	{
+		string text = string.Format("[{0:HH:mm:ss}] id={1} ok={2}\r\n{3}\r\n\r\n", DateTime.Now, Util.Int(result, "id"), Util.Str(result, "ok"), Util.Str(result, "out"));
+		try
+		{
+			File.AppendAllText(DevPath("devout.txt"), text, new System.Text.UTF8Encoding(false));
+		}
+		catch (IOException ex)
+		{
+			Ui.Log("devout.txt write failed: " + ex.Message);
+		}
+	}
+
 	private void ReadCommands()
 	{
 		while (true)
@@ -1280,6 +1343,10 @@ internal class Session
 			break;
 		case "eval":
 			Ui.Info("lua> " + Util.Str(d2, "out"));
+			if (opts.Dev)
+			{
+				WriteDevOutput(d2);
+			}
 			break;
 		}
 	}
