@@ -46,6 +46,19 @@ The helper remembers your name and the last 5 host addresses that connected in `
 folder. On first run the name defaults to your Steam profile name (from Steam's `config/loginusers.vdf`), then your
 Windows user name.
 
+## Changes in 0.4.0 (in progress)
+
+- **Prices are shared.** Parking entrance prices (`ParkingEntry.ratePerMinute`), and shop, drive-thru and restroom prices
+  (`Pricing.price`, not yet tried in game), are the same on every player's PC.
+  - The host's game holds the true values. Clients send only what they changed. The host applies changes in the order
+    they arrive, broadcasts what changed every 2 s, and sends a full copy every 30 s and to anyone who finishes loading
+    its city.
+  - The mod (`lua/settings.lua`) applies only values that differ. It keeps its own fresh edit for about 5 s, so the edit
+    doesn't flicker back, and holds a friend's price until that friend's object exists here.
+  - Inbox messages of this kind replace each other, so a paused or loading game doesn't collect stale copies.
+  - Only exchanged with 0.4.0 peers.
+- `--dev` developer console (see above).
+
 ## Changes in 0.3.0
 
 - **Syncing while paused.** Pausing sets the game's simulation speed to 0, which stops `setTimeout`, so 0.2.0 stopped
@@ -82,6 +95,8 @@ Windows user name.
 | `lua/util.lua` | JSON encoder; `MP.emit` prints `MP>{json}` to stdout |
 | `lua/hooks.lua` | Wraps `setComponents`/`setComponent` to see every new placeable entity |
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; runs the repaint queue; reports the map size |
+| `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices (0.4.0) |
+| `src/SharedSettings.cs` | The host's price table (whitelist, ranges, what changed) and the queue of prices for our game (0.4.0) |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
 | `tests/FakeGame.cs`, `run.ps1` | Stand-in for the game and the scenario runner, for testing the helper's networking without it (see `tests/README.md`) |
@@ -101,3 +116,9 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `ping` | both | Keep-alive, every 3 s (0.3.0) |
 | `hostleft` | host → client | The host left its city (0.3.0) |
 | `bye` | host → client | The host is shutting down (0.3.0) |
+| `setting` | client → host | The client's player changed a price: `key` and `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) (0.4.0) |
+| `settings` | host → client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`) (0.4.0) |
+| `sync?` | client → host | Sent after loading the host's city: asks for every current price (0.4.0) |
+
+Between the helper and the game (inbox → game, `MP>` lines → helper), 0.4.0 adds `setting` (game → helper, a local
+change), inbox `settings` (apply these), inbox `settings?` (reply with all values) and its `settings` reply.

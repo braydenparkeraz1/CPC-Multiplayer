@@ -7,16 +7,21 @@
 //   menu   go back to the main menu
 //   save   save the city again
 //   exit   close the game
+//   price <key> <value>   the player set a parking price (prints a "setting" line)
+//   pause / resume        stop / start reading the inbox, like the real game while paused
 // Environment: FAKEGAME_IGNORE_LEAVE=1 ignores "leave" (tests the helper's force-close).
-// fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "leave: closing".
+// fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "leave: closing",
+// "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37".
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
 
 internal static class FakeGame
 {
-	private const string Version = "0.3.0";
+	private const string Version = "0.4.0";
 
 	private static string session = "";
 
@@ -27,6 +32,23 @@ internal static class FakeGame
 	private static int saveIn = -1;
 
 	private static int tick;
+
+	private static bool paused;
+
+	// key -> parking price, like ParkingEntry.ratePerMinute on the city's entrances.
+	private static readonly Dictionary<string, double> prices = new Dictionary<string, double>();
+
+	private const string PriceField = "ParkingEntry.ratePerMinute";
+
+	private static string Num(double v)
+	{
+		return v.ToString("R", CultureInfo.InvariantCulture);
+	}
+
+	private static string Entry(string key, double v)
+	{
+		return "{\"key\":\"" + key + "\",\"fields\":{\"" + PriceField + "\":" + Num(v) + "}}";
+	}
 
 	private static void Emit(string t, string d)
 	{
@@ -89,6 +111,17 @@ internal static class FakeGame
 					Log("exit");
 					return 0;
 				}
+				else if (cmd == "pause" || cmd == "resume")
+				{
+					paused = cmd == "pause";
+				}
+				else if (cmd.StartsWith("price "))
+				{
+					string[] parts = cmd.Split(' ');
+					double v = double.Parse(parts[2], CultureInfo.InvariantCulture);
+					prices[parts[1]] = v;
+					Emit("setting", Entry(parts[1], v));
+				}
 			}
 			if (saveIn >= 0 && saveIn-- == 0)
 			{
@@ -101,9 +134,13 @@ internal static class FakeGame
 				Emit("ready", "{\"objects\":3,\"seen\":3,\"hookedBy\":\"catalogue\",\"map\":{\"x\":512,\"y\":96,\"z\":512}}");
 				Log("ready");
 			}
-			if (context == "level" && tick % 10 == 0)
+			if (context == "level" && tick % 10 == 0 && !paused)
 			{
 				Emit("hb", "{\"tick\":" + tick + ",\"paused\":false}");
+			}
+			if (paused)
+			{
+				continue;
 			}
 			string text;
 			try
@@ -118,7 +155,7 @@ internal static class FakeGame
 			{
 				continue;
 			}
-			foreach (Match m in Regex.Matches(text, "\\[\"id\"\\]=(\\d+),\\[\"type\"\\]=\"(\\w+)\"([^\\n]*)"))
+			foreach (Match m in Regex.Matches(text, "\\[\"id\"\\]=(\\d+),\\[\"type\"\\]=\"([\\w?]+)\"([^\\n]*)"))
 			{
 				long id = long.Parse(m.Groups[1].Value);
 				if (id <= lastId)
@@ -139,6 +176,30 @@ internal static class FakeGame
 					Match p = Regex.Match(m.Groups[3].Value, "\\[\"path\"\\]=\"([^\"]+)\"");
 					Log("loading " + p.Groups[1].Value + (File.Exists(p.Groups[1].Value) ? " (exists)" : " (MISSING)"));
 					EnterRoom("level");
+				}
+				else if (type == "settings?")
+				{
+					Log("settings? answered " + prices.Count);
+					List<string> entries = new List<string>();
+					foreach (KeyValuePair<string, double> kv in prices)
+					{
+						entries.Add(Entry(kv.Key, kv.Value));
+					}
+					Emit("settings", "{\"entries\":[" + string.Join(",", entries.ToArray()) + "],\"full\":true}");
+				}
+				else if (type == "settings")
+				{
+					// {["key"]="...",["fields"]={["ParkingEntry.ratePerMinute"]=0.37,},}
+					foreach (Match e in Regex.Matches(m.Groups[3].Value, "\\[\"key\"\\]=\"([^\"]+)\",\\[\"fields\"\\]=\\{\\[\"" + Regex.Escape(PriceField) + "\"\\]=([-0-9.Ee+]+)"))
+					{
+						string key = e.Groups[1].Value;
+						double v = double.Parse(e.Groups[2].Value, CultureInfo.InvariantCulture);
+						if (!prices.TryGetValue(key, out var old) || Math.Abs(old - v) > 1e-9)
+						{
+							prices[key] = v;
+							Log("applied " + key + " " + PriceField + "=" + Num(v));
+						}
+					}
 				}
 				else if (type == "leave")
 				{

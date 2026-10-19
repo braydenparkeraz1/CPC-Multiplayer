@@ -137,6 +137,19 @@ internal class Session
 
 	private readonly Dictionary<int, KeyValuePair<DateTime, byte>> landLog = new Dictionary<int, KeyValuePair<DateTime, byte>>();
 
+	// Prices and other player-set values: the host's table is the truth (see SharedSettings).
+	private readonly SharedSettings sharedSettings = new SharedSettings();
+
+	private readonly SettingsDelivery settingsToGame = new SettingsDelivery();
+
+	private DateTime lastSettingsBroadcast = DateTime.MinValue;
+
+	private DateTime lastSettingsFull = DateTime.MinValue;
+
+	private static readonly TimeSpan SettingsInterval = TimeSpan.FromSeconds(2.0);
+
+	private static readonly TimeSpan SettingsFullInterval = TimeSpan.FromSeconds(30.0);
+
 	private static readonly TimeSpan TilePollInterval = TimeSpan.FromSeconds(1.0);
 
 	private static readonly TimeSpan LocateRetry = TimeSpan.FromSeconds(10.0);
@@ -310,6 +323,14 @@ internal class Session
 				CheckWorldRequests();
 			}
 			KeepAlive();
+			try
+			{
+				SettingsTick();
+			}
+			catch (Exception ex4)
+			{
+				Ui.Log("settings sync error: " + ex4);
+			}
 			if (DateTime.UtcNow - lastTilePoll >= TilePollInterval)
 			{
 				lastTilePoll = DateTime.UtcNow;
@@ -458,6 +479,8 @@ internal class Session
 		landLog.Clear();
 		landToApply.Clear();
 		worldRequests.Clear();
+		sharedSettings.Clear();
+		settingsToGame.Clear();
 		SendHello();
 		if (gameContext == "level")
 		{
@@ -469,6 +492,7 @@ internal class Session
 			{
 				locateAttempts = 0;
 				StartTileSync();
+				inbox.Replace("settings?", "", null);
 			}
 		}
 		else
@@ -1209,6 +1233,7 @@ internal class Session
 			gamePaused = false;
 			worldPending = true;
 			StopTileSync();
+			settingsToGame.Clear();
 			if (isHost && wasInCity)
 			{
 				HostLeftCity();
@@ -1267,6 +1292,7 @@ internal class Session
 					tilesToApply.Clear();
 					landLog.Clear();
 					landToApply.Clear();
+					sharedSettings.Clear();
 				}
 			}
 			break;
@@ -1297,9 +1323,16 @@ internal class Session
 				worldPending = false;
 				Ui.Good("You're in the host's city. Building is now shared.");
 				DeleteOldWorldSave();
+				if (host != null && SharedSettings.PeerSupports(host.Version))
+				{
+					// Prices may have changed since the host's save was written.
+					host.Send(new Dictionary<string, object> { { "t", "sync?" } });
+				}
 			}
 			else
 			{
+				// Fill the shared price table from our own game.
+				inbox.Replace("settings?", "", null);
 				Ui.Good(string.Format("City loaded ({0} objects). Friends can join now.", Util.Int(d2, "objects")));
 				Peer[] array = peers.Where((Peer x) => x.Hello).ToArray();
 				foreach (Peer p in array)
@@ -1327,6 +1360,18 @@ internal class Session
 		case "demolish":
 		case "remove":
 			OnLocalEvent(text, d2);
+			break;
+		case "setting":
+			OnLocalSetting(d2);
+			break;
+		case "settings":
+			// Our game's full snapshot (answer to "settings?"); only the host's is the truth.
+			if (isHost && InSharedCity)
+			{
+				sharedSettings.ReplaceAll(SharedSettings.CleanEntries(d2.TryGetValue("entries", out var entries) ? entries : null));
+				Ui.Log("price/settings snapshot from the game: " + sharedSettings.Count + " objects");
+				lastSettingsFull = DateTime.MinValue;
+			}
 			break;
 		case "blocked":
 		{
@@ -1390,6 +1435,7 @@ internal class Session
 		kicked = true;
 		worldPending = true;
 		toGame.Clear();
+		settingsToGame.Clear();
 		tilesToApply.Clear();
 		landToApply.Clear();
 		StopTileSync();
@@ -1451,6 +1497,10 @@ internal class Session
 			if (isHost)
 			{
 				eventLog.Add(new KeyValuePair<DateTime, Dictionary<string, object>>(DateTime.UtcNow, dictionary));
+				if (type != "place")
+				{
+					sharedSettings.Remove((string)dictionary["key"]);
+				}
 				Broadcast(new Dictionary<string, object>
 				{
 					{ "t", "ev" },
@@ -1465,6 +1515,78 @@ internal class Session
 					{ "t", "ev" },
 					{ "ev", dictionary }
 				});
+			}
+		}
+	}
+
+	// Our game reports a price or other synced value the player changed.
+	private void OnLocalSetting(Dictionary<string, object> d)
+	{
+		string key = Util.Str(d, "key");
+		Dictionary<string, double> fields = (d.TryGetValue("fields", out var raw) ? SharedSettings.CleanFields(raw) : null);
+		if (!SharedSettings.ValidKey(key) || fields == null || !InSharedCity)
+		{
+			return;
+		}
+		if (isHost)
+		{
+			// Goes out with the next broadcast.
+			sharedSettings.Merge(key, fields);
+		}
+		else if (host != null && SharedSettings.PeerSupports(host.Version))
+		{
+			// Only the change, never a total: the host applies changes in the order they arrive.
+			host.Send(new Dictionary<string, object>
+			{
+				{ "t", "setting" },
+				{ "key", key },
+				{ "fields", SharedSettings.Entry(key, fields)["fields"] }
+			});
+		}
+	}
+
+	private void SettingsTick()
+	{
+		if (isHost && InSharedCity)
+		{
+			DateTime now = DateTime.UtcNow;
+			if (now - lastSettingsFull >= SettingsFullInterval)
+			{
+				// Now and then everything, which corrects anything a client missed.
+				lastSettingsFull = now;
+				lastSettingsBroadcast = now;
+				sharedSettings.TakeChanged();
+				BroadcastSettings(sharedSettings.All(), full: true);
+			}
+			else if (now - lastSettingsBroadcast >= SettingsInterval)
+			{
+				lastSettingsBroadcast = now;
+				BroadcastSettings(sharedSettings.TakeChanged(), full: false);
+			}
+		}
+		if (InSharedCity && (isHost || (InHostCity && !kicked)))
+		{
+			settingsToGame.Flush(inbox);
+		}
+	}
+
+	private void BroadcastSettings(List<object> entries, bool full)
+	{
+		if (entries.Count == 0)
+		{
+			return;
+		}
+		Dictionary<string, object> msg = new Dictionary<string, object>
+		{
+			{ "t", "settings" },
+			{ "entries", entries },
+			{ "full", full }
+		};
+		foreach (Peer peer in peers)
+		{
+			if (peer.Hello && SharedSettings.PeerSupports(peer.Version))
+			{
+				peer.Send(msg);
 			}
 		}
 	}
@@ -1668,6 +1790,10 @@ internal class Session
 			{
 				Ui.Player(Describe(p.Name, dictionary));
 				eventLog.Add(new KeyValuePair<DateTime, Dictionary<string, object>>(DateTime.UtcNow, dictionary));
+				if ((string)dictionary["type"] != "place")
+				{
+					sharedSettings.Remove((string)dictionary["key"]);
+				}
 				DeliverToGame(dictionary);
 				Broadcast(new Dictionary<string, object>
 				{
@@ -1700,6 +1826,38 @@ internal class Session
 			}
 			break;
 		}
+		case "setting":
+		{
+			// A client changed a price: apply it here and pass it on with the next broadcast.
+			string key = Util.Str(m, "key");
+			Dictionary<string, double> fields = (m.TryGetValue("fields", out var raw) ? SharedSettings.CleanFields(raw) : null);
+			if (SharedSettings.ValidKey(key) && fields != null && InSharedCity && SharedSettings.PeerSupports(p.Version))
+			{
+				Dictionary<string, double> diff = sharedSettings.Merge(key, fields);
+				if (diff.Count > 0)
+				{
+					Ui.Log($"[{p.Name}] changed {key.Split('@')[0]}: " + string.Join(", ", diff.Select((KeyValuePair<string, double> kv) => kv.Key + "=" + kv.Value)));
+					settingsToGame.Enqueue(key, diff);
+				}
+			}
+			break;
+		}
+		case "sync?":
+			// A client finished loading our city: give it every current value right away.
+			if (InSharedCity && SharedSettings.PeerSupports(p.Version))
+			{
+				List<object> all = sharedSettings.All();
+				if (all.Count > 0)
+				{
+					p.Send(new Dictionary<string, object>
+					{
+						{ "t", "settings" },
+						{ "entries", all },
+						{ "full", true }
+					});
+				}
+			}
+			break;
 		case "chat":
 		{
 			string text3 = Util.Str(m, "text") ?? "";
@@ -2036,6 +2194,18 @@ internal class Session
 			}
 			break;
 		}
+		case "settings":
+			// The host's prices; the game applies only the ones that differ from its own.
+			if (!kicked)
+			{
+				List<KeyValuePair<string, Dictionary<string, double>>> entries = SharedSettings.CleanEntries(m.TryGetValue("entries", out var raw) ? raw : null);
+				foreach (KeyValuePair<string, Dictionary<string, double>> entry in entries)
+				{
+					settingsToGame.Enqueue(entry.Key, entry.Value);
+				}
+				Ui.Log("host settings: " + entries.Count + (Util.Str(m, "full") == "True" ? " (full)" : ""));
+			}
+			break;
 		case "chat":
 		{
 			string text = Util.Str(m, "name");
@@ -2078,6 +2248,7 @@ internal class Session
 		Directory.CreateDirectory(Path.GetDirectoryName(path));
 		File.WriteAllBytes(path, array);
 		toGame.Clear();
+		settingsToGame.Clear();
 		tilesToApply.Clear();
 		tilesToApply.AddRange(TileSync.Unpack(Util.Str(m, "tiles")));
 		landToApply.Clear();

@@ -16,6 +16,9 @@ internal class Inbox
 
 	private readonly Dictionary<long, DateTime> addedAt = new Dictionary<long, DateTime>();
 
+	// Message id -> "type\nkey" for messages added with Replace.
+	private readonly Dictionary<long, string> coalesced = new Dictionary<long, string>();
+
 	private long nextId = 1L;
 
 	// Newest message id the game has run.
@@ -63,6 +66,23 @@ internal class Inbox
 		return id;
 	}
 
+	// Like Add, but drops a still-pending message with the same type and key first, so a paused or
+	// loading game doesn't pile up stale copies (the whole pending list is rewritten on every change).
+	// The new message gets a new id: the game may already have run the old one without acking yet.
+	public long Replace(string type, string key, Dictionary<string, object> fields)
+	{
+		string tag = type + "\n" + key;
+		foreach (long old in coalesced.Where((KeyValuePair<long, string> kv) => kv.Value == tag).Select((KeyValuePair<long, string> kv) => kv.Key).ToList())
+		{
+			pending.RemoveAll((Dictionary<string, object> m) => (long)m["id"] == old);
+			addedAt.Remove(old);
+			coalesced.Remove(old);
+		}
+		long id = Add(type, fields);
+		coalesced[id] = tag;
+		return id;
+	}
+
 	// Drops every message the game hasn't run yet.
 	public void Clear()
 	{
@@ -70,6 +90,7 @@ internal class Inbox
 		{
 			pending.Clear();
 			addedAt.Clear();
+			coalesced.Clear();
 			dirty = true;
 		}
 	}
@@ -82,6 +103,10 @@ internal class Inbox
 		foreach (long item in addedAt.Keys.Where((long k) => k <= id).ToList())
 		{
 			addedAt.Remove(item);
+		}
+		foreach (long item in coalesced.Keys.Where((long k) => k <= id).ToList())
+		{
+			coalesced.Remove(item);
 		}
 		if (pending.Count != count)
 		{

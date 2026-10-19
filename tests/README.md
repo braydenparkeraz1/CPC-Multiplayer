@@ -67,3 +67,16 @@ Each starts both helpers with `lobby`, so the games start before anyone picks ho
 
 HostJoin (which includes the host going to the menu), HostQuit, HostKilled and IgnoreLeave cover the 0.3.0 table.
 The frozen-host case is not automated.
+
+## Scenarios added for 0.4.0 (prices)
+
+The fake game keeps a table of parking prices. `price <key> <value>` in its `control.txt` acts as the player changing one
+(it prints a `setting` line). It answers `settings?`, logs `applied <key> ParkingEntry.ratePerMinute=<value>` for every
+value an inbox `settings` changes, and `pause` / `resume` stop and start its inbox reading.
+
+| Scenario (`run.ps1`) | Expected |
+|---|---|
+| PriceHostToClient | The host's game asks its game for prices when the city loads; a price the host sets reaches the client's game |
+| PriceClientToHost | A price the client sets reaches the host's game, and the host's broadcast doesn't re-apply it on the client |
+| PriceOnJoin | A price set before the client joined reaches its game after loading (`sync?`) |
+| PriceCoalesce | Four price changes while the client's game is "paused" leave one pending `settings` message; after resuming only the newest is applied |

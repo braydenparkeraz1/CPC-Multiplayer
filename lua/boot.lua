@@ -19,7 +19,7 @@ _G.MP = MP
 
 MP.ROOT = "multiplayer/"
 MP.POLL_INTERVAL = 0.1
-MP.VERSION = "0.3.0"
+MP.VERSION = "0.4.0"
 
 function MP.log(...)
     local parts = {}
@@ -82,8 +82,10 @@ if context == "level" then
         loadModule("hooks", roomEnv, "boot")
     end
     MP.room = MP_ROOMS and MP_ROOMS[roomEnv]
+    MP.onIndexed, MP.onUnindexed, MP.settingsTick = nil, nil, nil
     if MP.room then
         loadModule("sync", MP)
+        loadModule("settings", MP)
     else
         MP.log("placeable hook missing, object sync disabled")
     end

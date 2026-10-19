@@ -303,8 +303,70 @@ function Scenario-LobbyHostGoneBeforeCity {
     Write-Host "    ok: client game stayed open"
 }
 
+# ---- 0.4.0 prices and other player-set values ----
+
+$K1 = "ParkingEntrance@10,8,20/0/0"
+
+function Applied([string]$key, [string]$value) { return [regex]::Escape("applied $key ParkingEntry.ratePerMinute=$value") }
+
+function Start-HostAndClient([int]$port) {
+    $h = New-GameDir "host"; $c = New-GameDir "client"
+    Start-Helper $h @("host", "--name", "Hosty", "--port", $port) | Out-Null
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    Game $h "level"
+    Expect "host city loaded" { HelperLog $h } "City loaded"
+    Expect "host asks its game for prices" { GameLog $h } "settings\? answered"
+    Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty") | Out-Null
+    Expect "client in host's city" { HelperLog $c } "You're in the host's city"
+    return @{ h = $h; c = $c }
+}
+
+function Scenario-PriceHostToClient {
+    $s = Start-HostAndClient (Next-Port)
+    Game $s.h "price $K1 0.37"
+    Expect "client game gets the host's price" { GameLog $s.c } (Applied $K1 "0.37") 1 10
+}
+
+function Scenario-PriceClientToHost {
+    $s = Start-HostAndClient (Next-Port)
+    Game $s.c "price $K1 0.5"
+    Expect "host game gets the client's price" { GameLog $s.h } (Applied $K1 "0.5") 1 10
+    # The host's next broadcast carries it back; the client has it already, so nothing changes there.
+    Start-Sleep -Seconds 3
+    if ((GameLog $s.c) -match [regex]::Escape("applied $K1")) { throw "client re-applied its own price" }
+    Write-Host "    ok: no echo on the client"
+}
+
+function Scenario-PriceOnJoin {
+    $h = New-GameDir "host"; $c = New-GameDir "client"; $port = Next-Port
+    Start-Helper $h @("host", "--name", "Hosty", "--port", $port) | Out-Null
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    Game $h "level"
+    Expect "host city loaded" { HelperLog $h } "City loaded"
+    Game $h "price $K1 0.2"
+    Start-Sleep -Seconds 1
+    Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty") | Out-Null
+    Expect "client in host's city" { HelperLog $c } "You're in the host's city"
+    Expect "client gets the current prices on joining" { GameLog $c } (Applied $K1 "0.2") 1 10
+}
+
+function Scenario-PriceCoalesce {
+    $s = Start-HostAndClient (Next-Port)
+    Game $s.c "pause"
+    foreach ($v in "0.1", "0.2", "0.3", "0.4") { Game $s.h "price $K1 $v"; Start-Sleep -Milliseconds 2500 }
+    $inbox = Get-ChildItem (Join-Path $s.c "multiplayer\runtime") -Filter "inbox_*.lua" | Select-Object -First 1
+    $n = [regex]::Matches((Read-Shared $inbox.FullName), '\["type"\]="settings"').Count
+    if ($n -ne 1) { throw "expected 1 pending settings message, found $n" }
+    Write-Host "    ok: one pending settings message while paused"
+    Game $s.c "resume"
+    Expect "client gets the newest price after resuming" { GameLog $s.c } (Applied $K1 "0.4") 1 10
+    if ((GameLog $s.c) -match [regex]::Escape("ratePerMinute=0.1")) { throw "a stale price was applied" }
+    Write-Host "    ok: stale prices skipped"
+}
+
 $scenarios = @("HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
-    "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity")
+    "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
+    "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }
