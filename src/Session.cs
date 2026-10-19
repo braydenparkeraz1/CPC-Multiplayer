@@ -20,11 +20,12 @@ internal class Session
 
 	private readonly bool isHost;
 
-	private readonly string sessionId = Util.NewId();
+	// A new id (and inbox) per game launch, so a relaunched game never replays the old inbox.
+	private string sessionId = Util.NewId();
 
 	private readonly BlockingCollection<Action> work = new BlockingCollection<Action>();
 
-	private readonly Inbox inbox;
+	private Inbox inbox;
 
 	private readonly GameProcess game = new GameProcess();
 
@@ -37,6 +38,8 @@ internal class Session
 	private string gameContext = "starting";
 
 	private bool gameReady;
+
+	private bool gamePaused;
 
 	private int roomSeq;
 
@@ -68,11 +71,30 @@ internal class Session
 
 	private bool worldPending = true;
 
-	private int worldRoomSeq = -1;
-
 	private string worldSaveName;
 
 	private string previousWorldSave;
+
+	// Client: the room (roomSeq) that holds the host's city, -1 while the game has none.
+	private int hostCityRoom = -1;
+
+	// Client: a loadworld was sent and the host's city hasn't shown up as a room yet.
+	private bool loadingHostCity;
+
+	private long loadWorldMsgId;
+
+	// Client: the host left the city this game has; it must not be played any more.
+	private bool kicked;
+
+	// Client: the host closed the game or the connection is gone; this session is over.
+	private bool hostGone;
+
+	// Client: the game was asked to close (it is killed if it is still open after CloseGrace).
+	private DateTime closeRequestedAt = DateTime.MinValue;
+
+	private bool relaunchAfterExit;
+
+	private bool relaunched;
 
 	private readonly TileSync tiles = new TileSync();
 
@@ -80,7 +102,13 @@ internal class Session
 
 	private DateTime lastTilePoll = DateTime.MinValue;
 
+	private DateTime lastPing = DateTime.MinValue;
+
 	private bool locating;
+
+	private int locateAttempts;
+
+	private DateTime lastLocateAttempt = DateTime.MinValue;
 
 	private readonly List<TileChange> tilesToApply = new List<TileChange>();
 
@@ -91,6 +119,20 @@ internal class Session
 	private readonly Dictionary<int, KeyValuePair<DateTime, byte>> landLog = new Dictionary<int, KeyValuePair<DateTime, byte>>();
 
 	private static readonly TimeSpan TilePollInterval = TimeSpan.FromSeconds(1.0);
+
+	private static readonly TimeSpan LocateRetry = TimeSpan.FromSeconds(10.0);
+
+	private const int MaxLocateAttempts = 6;
+
+	private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(3.0);
+
+	// Silence after which a connection counts as dead. Sends run on their own threads,
+	// so even a long city transfer to someone else doesn't hold up the pings.
+	private static readonly TimeSpan HostTimeout = TimeSpan.FromSeconds(20.0);
+
+	private static readonly TimeSpan PeerTimeout = TimeSpan.FromSeconds(30.0);
+
+	private static readonly TimeSpan CloseGrace = TimeSpan.FromSeconds(8.0);
 
 	private static readonly HashSet<string> EventTypes = new HashSet<string> { "place", "demolish", "remove" };
 
@@ -111,6 +153,18 @@ internal class Session
 					return !worldPending;
 				}
 				return true;
+			}
+			return false;
+		}
+	}
+
+	private bool InHostCity
+	{
+		get
+		{
+			if (gameContext == "level")
+			{
+				return roomSeq == hostCityRoom;
 			}
 			return false;
 		}
@@ -144,6 +198,11 @@ internal class Session
 				Thread.Sleep(500);
 			}
 		}
+		if (!isHost && !opts.AllowSecondInstance)
+		{
+			// Copies of a host's city left over from an earlier session.
+			DeleteWorldSaves();
+		}
 		if (isHost)
 		{
 			if (!StartHosting())
@@ -157,21 +216,13 @@ internal class Session
 			Ui.PressEnter();
 			return 1;
 		}
-		inbox.Add("hello", new Dictionary<string, object>
-		{
-			{
-				"role",
-				isHost ? "host" : "client"
-			},
-			{ "name", opts.Name },
-			{ "autosave", opts.AutosaveSeconds }
-		});
+		SendHello();
 		if (isHost && !string.IsNullOrEmpty(opts.City))
 		{
 			string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(opts.City);
 			if (Regex.IsMatch(fileNameWithoutExtension, "^[A-Za-z0-9_-]+$") && File.Exists(Path.Combine(gameDir, "saves", fileNameWithoutExtension + ".cpcp")))
 			{
-				inbox.Add("loadworld", new Dictionary<string, object> { 
+				inbox.Add("loadworld", new Dictionary<string, object> {
 				{
 					"path",
 					"saves/" + fileNameWithoutExtension + ".cpcp"
@@ -193,12 +244,7 @@ internal class Session
 		};
 		game.Exited += delegate
 		{
-			Post(delegate
-			{
-				Ui.Info("The game was closed.");
-				gameExited = true;
-				quit = true;
-			});
+			Post(OnGameExited);
 		};
 		Ui.Step("Starting Car Park Capital...");
 		game.Start(gameDir, sessionId);
@@ -233,6 +279,7 @@ internal class Session
 			{
 				CheckWorldRequests();
 			}
+			KeepAlive();
 			if (DateTime.UtcNow - lastTilePoll >= TilePollInterval)
 			{
 				lastTilePoll = DateTime.UtcNow;
@@ -248,7 +295,7 @@ internal class Session
 			if (gameReady && !pauseHintShown && inbox.OldestWaiting > TimeSpan.FromSeconds(4.0))
 			{
 				pauseHintShown = true;
-				Ui.Warn("Your game looks paused. Friends' changes appear when you unpause.");
+				Ui.Warn("Your game isn't taking in friends' changes right now (paused?). They appear once it does.");
 			}
 			else if (pauseHintShown && inbox.OldestWaiting == TimeSpan.Zero)
 			{
@@ -270,11 +317,78 @@ internal class Session
 		return 0;
 	}
 
+	private void SendHello()
+	{
+		inbox.Add("hello", new Dictionary<string, object>
+		{
+			{
+				"role",
+				isHost ? "host" : "client"
+			},
+			{ "name", opts.Name },
+			{ "autosave", opts.AutosaveSeconds }
+		});
+	}
+
+	private void OnGameExited()
+	{
+		gameExited = true;
+		gameReady = false;
+		gameContext = "closed";
+		hostCityRoom = -1;
+		loadingHostCity = false;
+		closeRequestedAt = DateTime.MinValue;
+		StopTileSync();
+		if (!isHost)
+		{
+			DeleteWorldSaves();
+		}
+		if (relaunchAfterExit && !hostGone && host != null && !host.Closed)
+		{
+			relaunchAfterExit = false;
+			Ui.Step("Restarting your game. You rejoin when the host loads a city.");
+			Relaunch();
+			return;
+		}
+		Ui.Info(hostGone ? "Your game was closed because the host left. Start this helper again to rejoin." : "The game was closed.");
+		quit = true;
+	}
+
+	private void Relaunch()
+	{
+		inbox.Delete();
+		sessionId = Util.NewId();
+		inbox = new Inbox(gameDir, sessionId);
+		SendHello();
+		inbox.Flush();
+		toGame.Clear();
+		tilesToApply.Clear();
+		landToApply.Clear();
+		worldPending = true;
+		gameExited = false;
+		gameContext = "starting";
+		relaunched = true;
+		game.Start(gameDir, sessionId);
+	}
+
 	private void Shutdown()
 	{
-		if (game.Uptime > TimeSpan.Zero && Process.GetProcessesByName("carparkcapital").Length > 0 && !gameExited)
+		if (game.Uptime > TimeSpan.Zero && game.Running && !gameExited)
 		{
 			Ui.Warn("The game is still open, but it is no longer synced with anyone.");
+		}
+		if (isHost)
+		{
+			// Tell everyone the session is over, so their games close instead of carrying on alone.
+			Peer[] joined = peers.Where((Peer p) => p.Hello).ToArray();
+			foreach (Peer peer in joined)
+			{
+				peer.Send(new Dictionary<string, object> { { "t", "bye" } });
+			}
+			foreach (Peer peer in joined)
+			{
+				peer.Drain(TimeSpan.FromSeconds(2.0));
+			}
 		}
 		work.CompleteAdding();
 		if (listener != null)
@@ -293,6 +407,50 @@ internal class Session
 		tiles.AbandonAnchors();
 		tiles.Dispose();
 		inbox.Delete();
+		if (!isHost && !game.Running)
+		{
+			DeleteWorldSaves();
+		}
+	}
+
+	// Pings keep idle connections visibly alive; a connection that goes silent is closed,
+	// which runs the same path as a clean disconnect.
+	private void KeepAlive()
+	{
+		DateTime utcNow = DateTime.UtcNow;
+		if (utcNow - lastPing >= PingInterval)
+		{
+			lastPing = utcNow;
+			Dictionary<string, object> msg = new Dictionary<string, object> { { "t", "ping" } };
+			if (isHost)
+			{
+				Broadcast(msg, null);
+			}
+			else if (host != null && !host.Closed)
+			{
+				host.Send(msg);
+			}
+		}
+		if (isHost)
+		{
+			// Older helpers don't ping, so only peers on this version can time out.
+			foreach (Peer peer in peers.Where((Peer p) => p.Hello && p.Version == Program.Version && !p.Closed && p.Silence > PeerTimeout).ToList())
+			{
+				Ui.Log("no data from " + peer.Name + " for " + (int)peer.Silence.TotalSeconds + "s, dropping");
+				peer.Close();
+			}
+		}
+		else if (host != null && !host.Closed && host.Version == Program.Version && host.Silence > HostTimeout)
+		{
+			Ui.Log("no data from the host for " + (int)host.Silence.TotalSeconds + "s");
+			host.Close();
+		}
+		if (closeRequestedAt != DateTime.MinValue && utcNow - closeRequestedAt > CloseGrace && game.Running)
+		{
+			Ui.Warn("The game didn't close by itself, closing it now.");
+			closeRequestedAt = utcNow;
+			game.Kill();
+		}
 	}
 
 	private void StartTileSync()
@@ -302,6 +460,10 @@ internal class Session
 			return;
 		}
 		locating = true;
+		locateAttempts++;
+		lastLocateAttempt = DateTime.UtcNow;
+		int attempt = locateAttempts;
+		int room = roomSeq;
 		int pid = game.Id;
 		Thread thread = new Thread((ThreadStart)delegate
 		{
@@ -309,19 +471,32 @@ internal class Session
 			Post(delegate
 			{
 				locating = false;
+				if (room != roomSeq || !InSharedCity)
+				{
+					// The game changed level while we searched; that map is gone.
+					tiles.Detach();
+					return;
+				}
 				if (ok)
 				{
-					Ui.Good(tiles.LandActive ? "Roads, floors and land sync: on." : "Roads and floors sync: on (land purchases won't sync).");
+					Ui.Good((tiles.LandActive ? "Roads, floors and land sync: on" : "Roads and floors sync: on (land purchases won't sync)") + " (map " + tiles.Size + ").");
+				}
+				else if (attempt == 1)
+				{
+					Ui.Warn("Roads and floors aren't syncing yet (" + tiles.Status + "). Retrying; objects still sync.");
+				}
+				else if (attempt >= MaxLocateAttempts)
+				{
+					Ui.Warn("Roads and floors won't sync live (" + tiles.Status + "). Objects still sync; use 'refresh' for roads.");
 				}
 				else
 				{
-					Ui.Warn("Roads and floors won't sync live (" + tiles.Status + "). Objects still sync; use 'refresh' for roads.");
+					Ui.Log("tile map search " + attempt + " failed: " + tiles.Status);
 				}
 			});
 		});
 		thread.IsBackground = true;
-		Thread thread2 = thread;
-		thread2.Start();
+		thread.Start();
 	}
 
 	private void StopTileSync()
@@ -332,14 +507,24 @@ internal class Session
 
 	private void TileTick()
 	{
-		if (!tiles.Active || !InSharedCity)
+		if (!InSharedCity)
 		{
+			return;
+		}
+		if (!tiles.Active)
+		{
+			// The map may not be allocated yet right after loading, or was lost; look again.
+			if (!locating && locateAttempts < MaxLocateAttempts && DateTime.UtcNow - lastLocateAttempt >= LocateRetry)
+			{
+				StartTileSync();
+			}
 			return;
 		}
 		List<TileChange> list = tiles.Poll();
 		if (!tiles.Active)
 		{
-			Ui.Warn("Lost track of the tile map: " + tiles.Status);
+			Ui.Warn("Lost track of the tile map (" + tiles.Status + "), searching again.");
+			locateAttempts = 0;
 			return;
 		}
 		if (list.Count > 0)
@@ -436,7 +621,7 @@ internal class Session
 		List<object> list = new List<object>();
 		foreach (PaintAnchor anchor in anchors)
 		{
-			TileSync.Position(anchor.Index, out var x, out var y, out var z);
+			tiles.Position(anchor.Index, out var x, out var y, out var z);
 			list.Add(new Dictionary<string, object>
 			{
 				{ "id", anchor.Id },
@@ -562,7 +747,8 @@ internal class Session
 			}
 			break;
 		case "status":
-			Ui.Info(string.Format("Game: {0}{1}. Waiting to send to game: {2}.", gameContext, gameReady ? " (syncing)" : "", toGame.Count));
+			Ui.Info(string.Format("Game: {0}{1}{2}. Waiting to send to game: {3}.", gameContext, gameReady ? " (syncing)" : "", gamePaused ? ", paused" : "", toGame.Count));
+			Ui.Info("Roads and floors: " + tiles.Status + " (map " + tiles.Size + ").");
 			if (!isHost)
 			{
 				Ui.Info(worldPending ? ("You still need to load the host's city: " + (worldSaveName ?? "(not received yet)")) : "You are in the host's city.");
@@ -612,28 +798,62 @@ internal class Session
 		switch (text)
 		{
 		case "hb":
+		{
 			lastHeartbeat = DateTime.UtcNow;
+			bool flag = d2.TryGetValue("paused", out var value) && value is bool && (bool)value;
+			if (flag != gamePaused)
+			{
+				gamePaused = flag;
+				Ui.Log(flag ? "game paused, mod keeps syncing" : "game unpaused");
+			}
 			break;
+		}
 		case "painted":
 			OnPainted(d2);
 			break;
 		case "room":
+		{
+			bool wasInCity = gameContext == "level";
 			roomSeq++;
 			gameContext = Util.Str(d2, "context") ?? "?";
 			gameReady = false;
+			gamePaused = false;
+			worldPending = true;
 			StopTileSync();
+			if (isHost && wasInCity)
+			{
+				HostLeftCity();
+			}
 			if (isHost && gameContext != "level")
 			{
 				cityLoadedAt = DateTime.MinValue;
 				cityFile = null;
 			}
-			if (Util.Str(d2, "version") != "0.2.0")
+			if (Util.Str(d2, "version") != Program.Version)
 			{
 				Ui.Warn("The mod scripts in the game are a different version (" + Util.Str(d2, "version") + "). Restart the helper.");
+			}
+			if (!isHost && gameContext == "level" && loadingHostCity)
+			{
+				// The level after a loadworld is the host's city.
+				loadingHostCity = false;
+				hostCityRoom = roomSeq;
+				if (kicked)
+				{
+					RequestGameClose(!hostGone);
+				}
 			}
 			if (gameContext == "menu" && isHost && (string.IsNullOrEmpty(opts.City) || roomSeq > 1))
 			{
 				Ui.Step("In the game, load the city you want to share (or start a new one).");
+			}
+			else if (gameContext == "menu" && !isHost && relaunched)
+			{
+				relaunched = false;
+				if (host != null && !host.Closed)
+				{
+					host.Send(new Dictionary<string, object> { { "t", "world?" } });
+				}
 			}
 			else if (gameContext == "level")
 			{
@@ -652,24 +872,30 @@ internal class Session
 				}
 			}
 			break;
+		}
 		case "ready":
 			if (gameContext != "level")
 			{
 				break;
 			}
 			gameReady = true;
-			if (!isHost && worldPending)
+			SetMapSize(Util.Dict(d2, "map"));
+			if (!isHost)
 			{
-				if (worldSaveName == null || roomSeq <= worldRoomSeq)
+				if (kicked && InHostCity)
 				{
-					Ui.Warn((worldSaveName == null) ? "This isn't the host's city; waiting for it to arrive." : ("This isn't the host's city. It should load by itself; if not, choose Load and pick '" + Path.GetFileNameWithoutExtension(worldSaveName) + "'."));
+					break;
+				}
+				if (worldSaveName == null || !InHostCity)
+				{
+					Ui.Warn((worldSaveName == null) ? "This isn't the host's city; waiting for it to arrive." : ("This isn't the host's city, so nothing you do here is shared. Type 'refresh' to load the host's city."));
 					break;
 				}
 				worldPending = false;
 				Ui.Good("You're in the host's city. Building is now shared.");
 				DeleteOldWorldSave();
 			}
-			else if (isHost)
+			else
 			{
 				Ui.Good(string.Format("City loaded ({0} objects). Friends can join now.", Util.Int(d2, "objects")));
 				Peer[] array = peers.Where((Peer x) => x.Hello).ToArray();
@@ -681,6 +907,7 @@ internal class Session
 			FlushToGame();
 			if (InSharedCity)
 			{
+				locateAttempts = 0;
 				StartTileSync();
 			}
 			break;
@@ -717,10 +944,96 @@ internal class Session
 		}
 	}
 
+	// The mod reports the game's tile map size; the memory search looks for arrays of that size.
+	private void SetMapSize(Dictionary<string, object> map)
+	{
+		long? x = Util.Int(map, "x");
+		long? y = Util.Int(map, "y");
+		long? z = Util.Int(map, "z");
+		if (!x.HasValue || !y.HasValue || !z.HasValue)
+		{
+			Ui.Log("mod did not report the map size, assuming " + tiles.Size);
+		}
+		else if (x.Value > 8192 || y.Value > 8192 || z.Value > 8192 || !tiles.SetSize((int)x.Value, (int)y.Value, (int)z.Value))
+		{
+			Ui.Warn($"The game reports an unexpected map size ({x}x{y}x{z}); roads and floors may not sync.");
+		}
+	}
+
+	// Host: our game left the city friends are playing in. Their copies close; when we load
+	// a city again they get it automatically.
+	private void HostLeftCity()
+	{
+		worldRequests.Clear();
+		Peer[] array = peers.Where((Peer p) => p.Hello).ToArray();
+		if (array.Length == 0)
+		{
+			return;
+		}
+		foreach (Peer peer in array)
+		{
+			peer.Send(new Dictionary<string, object> { { "t", "hostleft" } });
+		}
+		Ui.Info("You left the city, so friends' games close too. They rejoin when you load a city.");
+	}
+
+	// Client: the city our game has (or is loading) belongs to a host who left it.
+	private void LeaveHostCity()
+	{
+		kicked = true;
+		worldPending = true;
+		toGame.Clear();
+		tilesToApply.Clear();
+		landToApply.Clear();
+		StopTileSync();
+		if (loadingHostCity && inbox.LastAcked < loadWorldMsgId)
+		{
+			// The game never started loading it.
+			inbox.Clear();
+			loadingHostCity = false;
+		}
+		if (InHostCity)
+		{
+			RequestGameClose(!hostGone);
+		}
+	}
+
+	private void RequestGameClose(bool relaunch)
+	{
+		relaunchAfterExit = relaunch;
+		if (closeRequestedAt != DateTime.MinValue || !game.Running)
+		{
+			return;
+		}
+		Ui.Warn("Closing your game: the host's city can't be played without the host.");
+		inbox.Clear();
+		inbox.Add("leave", null);
+		closeRequestedAt = DateTime.UtcNow;
+	}
+
+	private void OnHostGone(string reason)
+	{
+		if (hostGone)
+		{
+			return;
+		}
+		hostGone = true;
+		if (host != null)
+		{
+			host.Close();
+		}
+		Ui.Error(reason + " You're disconnected.");
+		LeaveHostCity();
+		if (closeRequestedAt == DateTime.MinValue && !loadingHostCity)
+		{
+			Ui.Info("Type 'reconnect' to try again, or 'quit'.");
+		}
+	}
+
 	private void OnLocalEvent(string type, Dictionary<string, object> d)
 	{
 		Dictionary<string, object> dictionary = SanitizeEvent(type, d);
-		if (dictionary != null && (isHost || !worldPending))
+		if (dictionary != null && InSharedCity)
 		{
 			Ui.Player(Describe(opts.Name, dictionary));
 			if (isHost)
@@ -787,9 +1100,9 @@ internal class Session
 		string arg = text.Substring(0, text.IndexOf('@'));
 		return (string)ev["type"] switch
 		{
-			"place" => $"[{who}] placed {arg}", 
-			"demolish" => $"[{who}] demolished {arg}", 
-			_ => $"[{who}] removed {arg}", 
+			"place" => $"[{who}] placed {arg}",
+			"demolish" => $"[{who}] demolished {arg}",
+			_ => $"[{who}] removed {arg}",
 		};
 	}
 
@@ -908,16 +1221,17 @@ internal class Session
 			p.Hello = true;
 			p.Name = Util.CleanName(Util.Str(m, "name"));
 			string text2 = Util.Str(m, "version");
-			if (text2 != "0.2.0")
+			p.Version = text2;
+			if (text2 != Program.Version)
 			{
-				Ui.Warn(string.Format("{0} has mod version {1}, you have {2}. Use the same version.", p.Name, text2, "0.2.0"));
+				Ui.Warn(string.Format("{0} has mod version {1}, you have {2}. Use the same version.", p.Name, text2, Program.Version));
 			}
 			Ui.Good(p.Name + " joined from " + p.Address + ".");
 			p.Send(new Dictionary<string, object>
 			{
 				{ "t", "welcome" },
 				{ "host", opts.Name },
-				{ "version", "0.2.0" }
+				{ "version", Program.Version }
 			});
 			Broadcast(new Dictionary<string, object>
 			{
@@ -938,7 +1252,7 @@ internal class Session
 		{
 			Dictionary<string, object> d = Util.Dict(m, "ev");
 			Dictionary<string, object> dictionary = SanitizeEvent(Util.Str(d, "type"), d);
-			if (dictionary != null)
+			if (dictionary != null && InSharedCity)
 			{
 				Ui.Player(Describe(p.Name, dictionary));
 				eventLog.Add(new KeyValuePair<DateTime, Dictionary<string, object>>(DateTime.UtcNow, dictionary));
@@ -955,7 +1269,7 @@ internal class Session
 		case "tiles":
 		{
 			List<TileChange> list4 = TileSync.Unpack(Util.Str(m, "data"));
-			if (list4.Count != 0)
+			if (list4.Count != 0 && InSharedCity)
 			{
 				Ui.Player($"[{p.Name}] built roads/floors ({list4.Count} tiles)");
 				tilesToApply.AddRange(list4);
@@ -966,7 +1280,7 @@ internal class Session
 		case "land":
 		{
 			List<KeyValuePair<int, byte>> list3 = TileSync.UnpackLand(Util.Str(m, "data"));
-			if (list3.Count != 0)
+			if (list3.Count != 0 && InSharedCity)
 			{
 				Ui.Player($"[{p.Name}] changed land ownership");
 				landToApply.AddRange(list3);
@@ -1196,6 +1510,7 @@ internal class Session
 			Ui.Info("Check the address, that the host's helper is running, and that their firewall allows it.");
 			return false;
 		}
+		hostGone = false;
 		host = new Peer(tcpClient)
 		{
 			Name = "host"
@@ -1204,7 +1519,10 @@ internal class Session
 		{
 			Post(delegate
 			{
-				OnHostMessage(m);
+				if (p == host)
+				{
+					OnHostMessage(m);
+				}
 			});
 		}, delegate(Peer p)
 		{
@@ -1212,7 +1530,7 @@ internal class Session
 			{
 				if (p == host)
 				{
-					Ui.Error("Lost connection to the host. Type 'reconnect' to try again.");
+					OnHostGone("Lost connection to the host.");
 				}
 			});
 		});
@@ -1220,7 +1538,7 @@ internal class Session
 		{
 			{ "t", "hello" },
 			{ "name", opts.Name },
-			{ "version", "0.2.0" }
+			{ "version", Program.Version }
 		});
 		return true;
 	}
@@ -1241,10 +1559,21 @@ internal class Session
 		switch (Util.Str(m, "t"))
 		{
 		case "welcome":
+			host.Version = Util.Str(m, "version");
 			Ui.Good("Connected to " + Util.CleanName(Util.Str(m, "host")) + "'s game.");
-			if (Util.Str(m, "version") != "0.2.0")
+			if (host.Version != Program.Version)
 			{
-				Ui.Warn("The host has mod version " + Util.Str(m, "version") + ", you have 0.2.0.");
+				Ui.Warn("The host has mod version " + host.Version + ", you have " + Program.Version + ".");
+			}
+			break;
+		case "bye":
+			OnHostGone("The host closed the game.");
+			break;
+		case "hostleft":
+			if (InHostCity || loadingHostCity)
+			{
+				Ui.Warn("The host left the city.");
+				LeaveHostCity();
 			}
 			break;
 		case "world":
@@ -1257,7 +1586,7 @@ internal class Session
 		{
 			Dictionary<string, object> d = Util.Dict(m, "ev");
 			Dictionary<string, object> dictionary = SanitizeEvent(Util.Str(d, "type"), d);
-			if (dictionary != null)
+			if (dictionary != null && !kicked)
 			{
 				Ui.Player(Describe(Util.CleanName(Util.Str(m, "name")), dictionary));
 				DeliverToGame(dictionary);
@@ -1267,7 +1596,7 @@ internal class Session
 		case "tiles":
 		{
 			List<TileChange> list = TileSync.Unpack(Util.Str(m, "data"));
-			if (list.Count != 0)
+			if (list.Count != 0 && !kicked)
 			{
 				Ui.Player($"Roads/floors changed ({list.Count} tiles)");
 				tilesToApply.AddRange(list);
@@ -1277,7 +1606,7 @@ internal class Session
 		case "land":
 		{
 			List<KeyValuePair<int, byte>> list2 = TileSync.UnpackLand(Util.Str(m, "data"));
-			if (list2.Count != 0)
+			if (list2.Count != 0 && !kicked)
 			{
 				Ui.Player("Land ownership changed");
 				landToApply.AddRange(list2);
@@ -1296,6 +1625,12 @@ internal class Session
 
 	private void ReceiveWorld(Dictionary<string, object> m)
 	{
+		if (closeRequestedAt != DateTime.MinValue)
+		{
+			// Our game is closing; the restarted game asks for the city again.
+			Ui.Log("ignoring a city that arrived while the game closes");
+			return;
+		}
 		byte[] array;
 		try
 		{
@@ -1337,11 +1672,13 @@ internal class Session
 				}
 			}
 		}
+		kicked = false;
 		worldPending = true;
-		worldRoomSeq = roomSeq;
+		loadingHostCity = true;
+		hostCityRoom = -1;
 		gameReady = false;
 		Ui.Good($"Received {text}'s city ({array.Length / 1024} KB). Loading it in your game...");
-		inbox.Add("loadworld", new Dictionary<string, object> { 
+		loadWorldMsgId = inbox.Add("loadworld", new Dictionary<string, object> {
 		{
 			"path",
 			"saves/" + worldSaveName
@@ -1368,6 +1705,39 @@ internal class Session
 		catch (UnauthorizedAccessException)
 		{
 		}
+		previousWorldSave = null;
+	}
+
+	// Client: removes our copies of host cities (MP_*.cpcp, including the game's autosaves of them),
+	// so they can't be loaded and played on after the host is gone.
+	private void DeleteWorldSaves()
+	{
+		DirectoryInfo directoryInfo = new DirectoryInfo(Path.Combine(gameDir, "saves"));
+		if (!directoryInfo.Exists)
+		{
+			return;
+		}
+		int num = 0;
+		FileInfo[] files = directoryInfo.GetFiles("MP_*.cpcp");
+		foreach (FileInfo fileInfo in files)
+		{
+			try
+			{
+				fileInfo.Delete();
+				num++;
+			}
+			catch (IOException)
+			{
+			}
+			catch (UnauthorizedAccessException)
+			{
+			}
+		}
+		if (num > 0)
+		{
+			Ui.Log("deleted " + num + " copies of host cities");
+		}
+		worldSaveName = null;
 		previousWorldSave = null;
 	}
 }

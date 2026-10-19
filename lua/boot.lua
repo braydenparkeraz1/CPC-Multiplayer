@@ -19,7 +19,7 @@ _G.MP = MP
 
 MP.ROOT = "multiplayer/"
 MP.POLL_INTERVAL = 0.1
-MP.VERSION = "0.2.0"
+MP.VERSION = "0.3.0"
 
 function MP.log(...)
     local parts = {}
@@ -89,11 +89,8 @@ if context == "level" then
     end
 end
 
--- Engine errors (C++ exceptions) can skip straight past pcall and abort this call,
--- so the next tick is scheduled before doing any work.
-local function tick()
-    if MP.generation ~= generation then return end
-    setTimeout(hostEntity, MP.POLL_INTERVAL, tick)
+local function step(paused)
+    MP.paused = paused
     if MP.pollInbox then
         local ok, err = pcall(MP.pollInbox)
         if not ok then MP.log("inbox error: " .. tostring(err)) end
@@ -104,6 +101,40 @@ local function tick()
     end
 end
 
+-- setTimeout counts simulation time, which stands still while the game is paused (speed 0).
+-- An update function with interval 0 is still called every frame then, so once the timer has
+-- been silent for STALL_FRAMES frames the frame callback drives the mod instead, every
+-- FRAMES_PER_STEP frames. While the game runs, only the timer drives it.
+local STALL_FRAMES = 60
+local FRAMES_PER_STEP = 6
+local framesSinceTimer, framesSinceStep = 0, 0
+
+-- Engine errors (C++ exceptions) can skip straight past pcall and abort this call,
+-- so the next tick is scheduled before doing any work.
+local function tick()
+    if MP.generation ~= generation then return end
+    setTimeout(hostEntity, MP.POLL_INTERVAL, tick)
+    framesSinceTimer = 0
+    step(false)
+end
+
+local function frame()
+    if MP.generation ~= generation then
+        pcall(setUpdateFunction, hostEntity, 0.0, nil)
+        return
+    end
+    framesSinceTimer = framesSinceTimer + 1
+    if framesSinceTimer < STALL_FRAMES then return end
+    framesSinceStep = framesSinceStep + 1
+    if framesSinceStep < FRAMES_PER_STEP then return end
+    framesSinceStep = 0
+    step(true)
+end
+
 setTimeout(hostEntity, MP.POLL_INTERVAL, tick)
+if context == "level" and type(setUpdateFunction) == "function" then
+    local ok, err = pcall(setUpdateFunction, hostEntity, 0.0, frame)
+    if not ok then MP.log("no frame callback, syncing stops while paused: " .. tostring(err)) end
+end
 MP.log("v" .. MP.VERSION .. " booted in '" .. tostring(context) .. "' session=" .. tostring(MP.sessionArg))
 MP.emit("room", { context = context, version = MP.VERSION, session = MP.sessionArg })

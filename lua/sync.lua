@@ -30,6 +30,9 @@ S.delayed = S.delayed or {}                   -- { tick = <run at>, msg = <place
 S.placing = S.placing or {}                   -- key -> replayed placement in progress
 S.lastRemoteRemoval = S.lastRemoteRemoval or -CLEAR_TICKS
 S.tick = S.tick or 0
+-- Ticks counted only while the game runs. Timeouts that wait for the game to finish something
+-- (a replayed placement, a repaint) use these, so a long pause doesn't make them give up.
+S.simTick = S.simTick or 0
 S.readyTick = S.readyTick or (S.tick + BASELINE_TICKS)
 
 local function keyFor(tpl, x, y, z, rot, var)
@@ -184,7 +187,7 @@ local function flushPending()
         end
     end
     for key, untilTick in pairs(S.expectPlace) do
-        if S.tick > untilTick and not S.placing[key] then
+        if S.simTick > untilTick and not S.placing[key] then
             S.expectPlace[key] = nil
             S.removeAfterPlace[key] = nil
         end
@@ -237,7 +240,7 @@ local function runPaints()
             applyTemplate(e, "MPPaint" .. a.mat, {}, false)
         end)
         if ok then
-            S.painting[a.id] = { entity = e, tick = S.tick }
+            S.painting[a.id] = { entity = e, tick = S.tick, simTick = S.simTick }
         else
             if valid(e) then destroyEntity(e) end
             results[#results + 1] = { id = a.id, ok = false }
@@ -251,7 +254,7 @@ local function runPaints()
             results[#results + 1] = { id = id, ok = true }
         elseif S.tick - p.tick >= 2 then
             local placing = component.Placing.has(e) and component.Placing.getFor(e)
-            if not placing or (placing.bEvaluated and placing.bBlocked) or S.tick - p.tick > PAINT_TIMEOUT then
+            if not placing or (placing.bEvaluated and placing.bBlocked) or S.simTick - p.simTick > PAINT_TIMEOUT then
                 destroyEntity(e)
                 S.painting[id] = nil
                 results[#results + 1] = { id = id, ok = false }
@@ -261,10 +264,22 @@ local function runPaints()
     if #results > 0 then MP.emit("painted", { results = results }) end
 end
 
+-- The tile map size, which the helper needs to find the map in the game's memory.
+local function mapSize()
+    local ok, size = pcall(function()
+        local s = tileMapSize
+        if type(s) == "function" then s = s() end
+        return { x = s.x, y = s.y, z = s.z }
+    end)
+    if ok and type(size.x) == "number" and type(size.y) == "number" and type(size.z) == "number" then return size end
+    return nil
+end
+
 function MP.onTick()
     S.tick = S.tick + 1
-    -- Lets the helper know the game is running (not paused) before it touches the tile map.
-    if S.tick % 10 == 0 then MP.emit("hb", { tick = S.tick }) end
+    if not MP.paused then S.simTick = S.simTick + 1 end
+    -- Lets the helper know the mod is running before it touches the tile map.
+    if S.tick % 10 == 0 then MP.emit("hb", { tick = S.tick, paused = MP.paused == true }) end
     processCandidates()
     scanKnown()
     flushPending()
@@ -273,7 +288,7 @@ function MP.onTick()
         S.readyAnnounced = true
         local count = 0
         for _ in pairs(S.known) do count = count + 1 end
-        MP.emit("ready", { objects = count, seen = S.seen, hookedBy = S.installedBy })
+        MP.emit("ready", { objects = count, seen = S.seen, hookedBy = S.installedBy, map = mapSize() })
         runDeferred()
     end
 end
@@ -294,7 +309,7 @@ MP.handlers.place = function(msg)
         S.delayed[#S.delayed + 1] = { tick = S.lastRemoteRemoval + CLEAR_TICKS, msg = msg }
         return
     end
-    S.expectPlace[msg.key] = S.tick + EXPECT_TICKS
+    S.expectPlace[msg.key] = S.simTick + EXPECT_TICKS
     local e = createEntity()
     local ok, err = pcall(function()
         local placing = component.Placing.getFor(e)

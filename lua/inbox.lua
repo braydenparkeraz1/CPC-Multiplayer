@@ -73,6 +73,14 @@ MP.handlers.loadworld = function(msg)
     openScreen("scripts/ui_screens/MPLoad")
 end
 
+-- The host left, so this copy of their city is no longer shared: close the game.
+-- Like level switches, this goes through a UI screen script. The helper force-closes the game
+-- if it is still open a few seconds later.
+MP.handlers.leave = function(msg)
+    _G.MP_LEAVE = true
+    openScreen("scripts/ui_screens/MPLoad")
+end
+
 MP.handlers.hello = function(msg)
     MP.role = msg.role
     MP.playerName = msg.name

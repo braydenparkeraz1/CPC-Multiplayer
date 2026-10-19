@@ -6,7 +6,7 @@ namespace CpcMultiplayer;
 
 internal static class Program
 {
-	public const string Version = "0.2.0";
+	public const string Version = "0.3.0";
 
 	public const int DefaultPort = 27777;
 
@@ -14,7 +14,7 @@ internal static class Program
 	{
 		try
 		{
-			Console.Title = "CPC Multiplayer 0.2.0";
+			Console.Title = "CPC Multiplayer " + Version;
 			Console.OutputEncoding = Encoding.UTF8;
 		}
 		catch (IOException)

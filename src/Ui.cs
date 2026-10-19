@@ -12,7 +12,7 @@ internal static class Ui
 
 	public static void Banner()
 	{
-		Write(ConsoleColor.Cyan, "=== Car Park Capital Multiplayer 0.2.0 ===");
+		Write(ConsoleColor.Cyan, "=== Car Park Capital Multiplayer " + Program.Version + " ===");
 		Write(ConsoleColor.DarkGray, "Co-op building mod. Keep this window open while you play.");
 		Console.WriteLine();
 	}

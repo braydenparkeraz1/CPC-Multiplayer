@@ -18,6 +18,9 @@ internal class Inbox
 
 	private long nextId = 1L;
 
+	// Newest message id the game has run.
+	public long LastAcked { get; private set; }
+
 	private bool dirty = true;
 
 	public TimeSpan OldestWaiting
@@ -38,8 +41,9 @@ internal class Inbox
 		path = Path.Combine(gameDir, "multiplayer", "runtime", "inbox_" + session + ".lua");
 	}
 
-	public void Add(string type, Dictionary<string, object> fields)
+	public long Add(string type, Dictionary<string, object> fields)
 	{
+		long id = nextId;
 		Dictionary<string, object> dictionary = new Dictionary<string, object>();
 		addedAt[nextId] = DateTime.UtcNow;
 		dictionary["id"] = nextId++;
@@ -56,10 +60,23 @@ internal class Inbox
 		}
 		pending.Add(dictionary);
 		dirty = true;
+		return id;
+	}
+
+	// Drops every message the game hasn't run yet.
+	public void Clear()
+	{
+		if (pending.Count > 0)
+		{
+			pending.Clear();
+			addedAt.Clear();
+			dirty = true;
+		}
 	}
 
 	public void Ack(long id)
 	{
+		LastAcked = Math.Max(LastAcked, id);
 		int count = pending.Count;
 		pending.RemoveAll((Dictionary<string, object> m) => (long)m["id"] <= id);
 		foreach (long item in addedAt.Keys.Where((long k) => k <= id).ToList())

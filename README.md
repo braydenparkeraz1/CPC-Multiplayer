@@ -1,8 +1,10 @@
-# CPC-Multiplayer 0.2.0 (recovered source)
+# CPC-Multiplayer
 
-Source recovered from `CPC-Multiplayer.exe` (a .NET Framework 4.0 console app, not obfuscated) by decompiling it with ILSpy.
-The Lua files in `lua/` were embedded resources in the exe and are identical to what it installs into the game folder.
-Rebuilding this source gives the same program: decompiling the rebuild matches the original apart from compiler-level differences.
+Co-op building mod for Car Park Capital: a console helper (`CPC-Multiplayer.exe`) that hosts or joins a game over TCP,
+plus Lua scripts it installs into the game.
+
+The 0.2.0 source was recovered from the original `CPC-Multiplayer.exe` (a .NET Framework 4.0 console app, not obfuscated)
+by decompiling it with ILSpy; that is the first commit. The Lua files in `lua/` were embedded resources in the exe.
 
 ## Build
 
@@ -13,6 +15,26 @@ dotnet build -c Release
 ```
 
 The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
+.NET Framework apps can't start from a path longer than 260 characters ("This application could not be started").
+
+## Changes in 0.3.0
+
+- **Syncing while paused.** Pausing sets the game's simulation speed to 0, which stops `setTimeout`, so 0.2.0 stopped
+  syncing until you unpaused. The mod now also registers an update function (interval 0, called every frame) that takes
+  over when the timer has been silent for 60 frames. Timeouts that wait for the game to finish a placement or repaint only
+  count unpaused time.
+- **Tile map search survives game updates.** The helper no longer needs memory regions of one exact size. The mod
+  reports the map size (`tileMapSize`), and the helper looks for arrays of that size in any big-enough region, at any
+  16-byte offset in the first 4 KB. A failed search is retried every 10 s (6 times), and again if the map is lost.
+- **Host leaving ends the session for everyone.**
+  - When the host quits or closes the game, it sends `bye`.
+  - When the host leaves its city (main menu or another city), it sends `hostleft`.
+  - Both sides ping every 3 s. The client gives up on a silent host after 20 s; the host drops a silent client after 30 s.
+  - A client in the host's city closes its game: the mod calls `tryCloseGame`, and the helper force-closes the game
+    after 8 s if needed. The client then deletes its `MP_*.cpcp` copies of host cities, so they can't be played on.
+  - After `hostleft` the client's game restarts and rejoins when the host loads a city; after `bye` the helper exits.
+- Sends run on a writer thread per connection, so one slow joiner can't stall everyone else.
+- Clients no longer share builds made in a city other than the host's (for example after loading their own save).
 
 ## Layout
 
@@ -20,15 +42,31 @@ The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
 |---|---|
 | `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`), console menu |
 | `src/GameInstall.cs` | Finds the game (Steam library or parent folders), copies the Lua files in, and patches 3 game scripts between `-- [cpc-multiplayer] begin/end` markers |
-| `src/GameProcess.cs` | Starts `carparkcapital.exe -mpsession <id>` and reads its stdout |
-| `src/Session.cs` | Core logic: host/join over TCP, routing events between game and network, sending the save file to joiners |
-| `src/Peer.cs` | One TCP connection: newline-delimited JSON |
+| `src/GameProcess.cs` | Starts `carparkcapital.exe -mpsession <id>`, reads its stdout, force-closes it |
+| `src/Session.cs` | Core logic: host/join over TCP, routing events between game and network, sending the save file to joiners, ending the session when the host leaves |
+| `src/Peer.cs` | One TCP connection: newline-delimited JSON, queued sends, liveness |
 | `src/Inbox.cs`, `Lua.cs` | Writes `multiplayer/runtime/inbox_<id>.lua`, the helper→game message channel |
 | `src/TileSync.cs`, `Native.cs` | Roads/floors/land sync by reading and writing the game's memory (`ReadProcessMemory`/`WriteProcessMemory`) |
-| `lua/boot.lua` | In-game bootstrap: loaded from the main menu and from every level; runs a 0.1 s tick |
-| `lua/inbox.lua` | Polls the inbox file, dispatches messages, acks |
+| `lua/boot.lua` | In-game bootstrap: loaded from the main menu and from every level; runs a 0.1 s tick, or a frame-driven one while paused |
+| `lua/inbox.lua` | Polls the inbox file, dispatches messages (`hello`, `loadworld`, `leave`, `eval`), acks |
 | `lua/util.lua` | JSON encoder; `MP.emit` prints `MP>{json}` to stdout |
 | `lua/hooks.lua` | Wraps `setComponents`/`setComponent` to see every new placeable entity |
-| `lua/sync.lua` | Detects local place/demolish; replays remote ones; runs the repaint queue |
-| `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) |
+| `lua/sync.lua` | Detects local place/demolish; replays remote ones; runs the repaint queue; reports the map size |
+| `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
+| `tests/FakeGame.cs` | Stand-in for the game, for testing the helper's networking without it (see `tests/README.md`) |
+
+## Network protocol
+
+TCP, port 27777 by default, one JSON object per line, field `t` is the type.
+
+| Type | Direction | Meaning |
+|---|---|---|
+| `hello` / `welcome` | client → host / host → client | Join, with name and mod version |
+| `world?` / `world` | client → host / host → client | Ask for / send the city (base64 save, plus newer builds, tiles and land) |
+| `ev` | both | Object placed, demolished or removed (`ev.type`, `ev.key`) |
+| `tiles`, `land` | both | Changed roads/floors (6 bytes each) and land ownership (5 bytes each), base64 |
+| `chat`, `players?` | both | Chat and player list |
+| `ping` | both | Keep-alive, every 3 s (0.3.0) |
+| `hostleft` | host → client | The host left its city (0.3.0) |
+| `bye` | host → client | The host is shutting down (0.3.0) |

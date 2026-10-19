@@ -35,9 +35,41 @@ internal class GameProcess
 		}
 	}
 
+	public bool Running
+	{
+		get
+		{
+			try
+			{
+				return proc != null && !proc.HasExited;
+			}
+			catch (InvalidOperationException)
+			{
+				return false;
+			}
+		}
+	}
+
 	public event Action<string> Line;
 
 	public event Action Exited;
+
+	public void Kill()
+	{
+		try
+		{
+			if (Running)
+			{
+				proc.Kill();
+			}
+		}
+		catch (InvalidOperationException)
+		{
+		}
+		catch (System.ComponentModel.Win32Exception)
+		{
+		}
+	}
 
 	public void Start(string gameDir, string session)
 	{
