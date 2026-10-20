@@ -71,8 +71,10 @@ The frozen-host case is not automated.
 ## Scenarios added for 0.4.0 (prices)
 
 The fake game keeps a table of parking prices. `price <key> <value>` in its `control.txt` acts as the player changing one
-(it prints a `setting` line). It answers `settings?`, logs `applied <key> ParkingEntry.ratePerMinute=<value>` for every
-value an inbox `settings` changes, and `pause` / `resume` stop and start its inbox reading.
+(it prints a numbered `setting` line). It answers `settings?`, logs `applied <key> ParkingEntry.ratePerMinute=<value>` for
+every value an inbox `settings` changes, and `pause` / `resume` stop and start its inbox reading. Like the mod, it skips a
+value whose `seen` is older than its own edit of that price (logged as `stale <key>=<value>`). `dump` logs every price as
+`price <key>=<value>`.
 
 | Scenario (`run.ps1`) | Expected |
 |---|---|
@@ -80,3 +82,11 @@ value an inbox `settings` changes, and `pause` / `resume` stop and start its inb
 | PriceClientToHost | A price the client sets reaches the host's game, and the host's broadcast doesn't re-apply it on the client |
 | PriceOnJoin | A price set before the client joined reaches its game after loading (`sync?`) |
 | PriceCoalesce | Four price changes while the client's game is "paused" leave one pending `settings` message; after resuming only the newest is applied |
+| PriceBothEdit | The host changes a price and the client changes it 0.4 s later: the host's game takes the client's value, and both end the same |
+| PriceStaleAtHost | A client's price waits in the paused host game's inbox when the host changes the same one: the waiting value is never applied, even after another price arrives, and both end at the host's value |
+| PriceStaleAtClient | The host's price waits in the paused client game's inbox when the client changes the same one: the client keeps its edit, and both end at it |
+
+Checked in the real game (two copies on one PC): a price set on either side shows on the other within 2 s, without
+flicking back while the slider is dragged; a new entrance a friend builds and prices arrives with that price; a price
+changed while paused goes out after unpausing. The price slider set both entrances of the test city at once, and both
+were synced. `Pricing.price` (shops, restrooms) is not tried yet.

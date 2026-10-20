@@ -150,6 +150,16 @@ internal class Session
 
 	private static readonly TimeSpan SettingsFullInterval = TimeSpan.FromSeconds(30.0);
 
+	// Newest "setting" seq our game reported in this room. Inbox "settings" carry it as "seen", so the game
+	// can tell values we wrote before we knew about one of its own edits.
+	private long gameSettingSeq;
+
+	// Client: numbers our "setting" messages to the host, and the last one sent per object. The host's
+	// "ack" says which it had applied when it sent its values.
+	private long settingSeqSent;
+
+	private readonly Dictionary<string, long> settingsSentAt = new Dictionary<string, long>();
+
 	private static readonly TimeSpan TilePollInterval = TimeSpan.FromSeconds(1.0);
 
 	private static readonly TimeSpan LocateRetry = TimeSpan.FromSeconds(10.0);
@@ -1234,6 +1244,7 @@ internal class Session
 			worldPending = true;
 			StopTileSync();
 			settingsToGame.Clear();
+			gameSettingSeq = 0;
 			if (isHost && wasInCity)
 			{
 				HostLeftCity();
@@ -1436,6 +1447,7 @@ internal class Session
 		worldPending = true;
 		toGame.Clear();
 		settingsToGame.Clear();
+		settingsSentAt.Clear();
 		tilesToApply.Clear();
 		landToApply.Clear();
 		StopTileSync();
@@ -1522,12 +1534,17 @@ internal class Session
 	// Our game reports a price or other synced value the player changed.
 	private void OnLocalSetting(Dictionary<string, object> d)
 	{
+		if (Util.Int(d, "seq") is long seq && seq > gameSettingSeq)
+		{
+			gameSettingSeq = seq;
+		}
 		string key = Util.Str(d, "key");
 		Dictionary<string, double> fields = (d.TryGetValue("fields", out var raw) ? SharedSettings.CleanFields(raw) : null);
 		if (!SharedSettings.ValidKey(key) || fields == null || !InSharedCity)
 		{
 			return;
 		}
+		settingsToGame.Drop(key, fields.Keys);
 		if (isHost)
 		{
 			// Goes out with the next broadcast.
@@ -1536,11 +1553,13 @@ internal class Session
 		else if (host != null && SharedSettings.PeerSupports(host.Version))
 		{
 			// Only the change, never a total: the host applies changes in the order they arrive.
+			settingsSentAt[key] = ++settingSeqSent;
 			host.Send(new Dictionary<string, object>
 			{
 				{ "t", "setting" },
 				{ "key", key },
-				{ "fields", SharedSettings.Entry(key, fields)["fields"] }
+				{ "fields", SharedSettings.Entry(key, fields)["fields"] },
+				{ "seq", settingSeqSent }
 			});
 		}
 	}
@@ -1566,7 +1585,7 @@ internal class Session
 		}
 		if (InSharedCity && (isHost || (InHostCity && !kicked)))
 		{
-			settingsToGame.Flush(inbox);
+			settingsToGame.Flush(inbox, gameSettingSeq);
 		}
 	}
 
@@ -1576,19 +1595,24 @@ internal class Session
 		{
 			return;
 		}
-		Dictionary<string, object> msg = new Dictionary<string, object>
-		{
-			{ "t", "settings" },
-			{ "entries", entries },
-			{ "full", full }
-		};
 		foreach (Peer peer in peers)
 		{
 			if (peer.Hello && SharedSettings.PeerSupports(peer.Version))
 			{
-				peer.Send(msg);
+				peer.Send(SettingsMessage(peer, entries, full));
 			}
 		}
+	}
+
+	private static Dictionary<string, object> SettingsMessage(Peer peer, List<object> entries, bool full)
+	{
+		return new Dictionary<string, object>
+		{
+			{ "t", "settings" },
+			{ "entries", entries },
+			{ "full", full },
+			{ "ack", peer.SettingSeq }
+		};
 	}
 
 	private static Dictionary<string, object> SanitizeEvent(string type, Dictionary<string, object> d)
@@ -1829,6 +1853,11 @@ internal class Session
 		case "setting":
 		{
 			// A client changed a price: apply it here and pass it on with the next broadcast.
+			// Counted even if it's refused below: what we send next is our answer to it.
+			if (Util.Int(m, "seq") is long seq && seq > p.SettingSeq)
+			{
+				p.SettingSeq = seq;
+			}
 			string key = Util.Str(m, "key");
 			Dictionary<string, double> fields = (m.TryGetValue("fields", out var raw) ? SharedSettings.CleanFields(raw) : null);
 			if (SharedSettings.ValidKey(key) && fields != null && InSharedCity && SharedSettings.PeerSupports(p.Version))
@@ -1849,12 +1878,7 @@ internal class Session
 				List<object> all = sharedSettings.All();
 				if (all.Count > 0)
 				{
-					p.Send(new Dictionary<string, object>
-					{
-						{ "t", "settings" },
-						{ "entries", all },
-						{ "full", true }
-					});
+					p.Send(SettingsMessage(p, all, full: true));
 				}
 			}
 			break;
@@ -2199,11 +2223,23 @@ internal class Session
 			if (!kicked)
 			{
 				List<KeyValuePair<string, Dictionary<string, double>>> entries = SharedSettings.CleanEntries(m.TryGetValue("entries", out var raw) ? raw : null);
+				long ack = Util.Int(m, "ack") ?? long.MaxValue;
+				int older = 0;
 				foreach (KeyValuePair<string, Dictionary<string, double>> entry in entries)
 				{
+					if (settingsSentAt.TryGetValue(entry.Key, out var sent))
+					{
+						if (sent > ack)
+						{
+							// Sent before the host had our latest change to it: ours is newer.
+							older++;
+							continue;
+						}
+						settingsSentAt.Remove(entry.Key);
+					}
 					settingsToGame.Enqueue(entry.Key, entry.Value);
 				}
-				Ui.Log("host settings: " + entries.Count + (Util.Str(m, "full") == "True" ? " (full)" : ""));
+				Ui.Log("host settings: " + entries.Count + (Util.Str(m, "full") == "True" ? " (full)" : "") + ((older > 0) ? $" ({older} older than our edits, skipped)" : ""));
 			}
 			break;
 		case "chat":
@@ -2249,6 +2285,7 @@ internal class Session
 		File.WriteAllBytes(path, array);
 		toGame.Clear();
 		settingsToGame.Clear();
+		settingsSentAt.Clear();
 		tilesToApply.Clear();
 		tilesToApply.AddRange(TileSync.Unpack(Util.Str(m, "tiles")));
 		landToApply.Clear();

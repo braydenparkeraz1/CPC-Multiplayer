@@ -31,6 +31,9 @@ internal class Peer
 
 	public string Version;
 
+	// Host: the newest "setting" seq this client sent that we've applied; our "settings" carry it as "ack".
+	public long SettingSeq;
+
 	// When data last arrived from the other side (DateTime.UtcNow ticks).
 	private long lastReceived = DateTime.UtcNow.Ticks;
 

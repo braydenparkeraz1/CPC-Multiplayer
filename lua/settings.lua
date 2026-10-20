@@ -15,7 +15,6 @@ local WHITELIST = {
 }
 
 local SCAN_PER_TICK = 200      -- tracked objects re-read per tick for local changes
-local PROTECT_TICKS = 50       -- a local edit isn't overwritten by an older host value for ~5 s
 local PENDING_TICKS = 300      -- values for objects that don't exist here yet wait ~30 s for them
 
 S.setLast = S.setLast or {}          -- key -> { ["Component.field"] = value } as last seen or applied
@@ -23,7 +22,8 @@ S.setList = S.setList or {}          -- tracked keys, scanned round-robin
 S.setPos = S.setPos or 1
 S.setTracked = S.setTracked or {}    -- key -> true
 S.setPending = S.setPending or {}    -- key -> { fields = {...}, untilTick = n }
-S.setProtect = S.setProtect or {}    -- key -> { tick = n, fields = {...} } (our own recent edits)
+S.setProtect = S.setProtect or {}    -- key -> { seq = n, fields = {...} } (our own recent edits)
+S.setSeq = S.setSeq or 0             -- numbers our "setting" reports; the helper echoes the newest as "seen"
 
 -- Float fields come back as float32 values, so compare loosely.
 local function same(a, b)
@@ -68,33 +68,23 @@ local function write(e, name, value)
     return (pcall(function() comp.getFor(e)[field] = value end))
 end
 
--- Our own edit wins for a few seconds over an incoming value, until the host sends it back.
-local function protected(key, name, value)
+-- A value the helper wrote before it had our own later edit of that field ("seen" is the newest
+-- of our reports it had). It's older than the edit, so the edit stays. Anything written after
+-- that is newer than the edit and applies, even while the edit is fresh.
+local function stale(key, name, seen)
     local protect = S.setProtect[key]
-    if not protect then return false end
-    if S.tick - protect.tick >= PROTECT_TICKS then
-        S.setProtect[key] = nil
-        return false
-    end
-    local mine = protect.fields[name]
-    if mine == nil then return false end
-    if same(mine, value) then
-        -- The host has our edit now.
-        protect.fields[name] = nil
-        return false
-    end
-    return true
+    return protect ~= nil and protect.fields[name] ~= nil and seen < protect.seq
 end
 
 -- Applies incoming values to one object; returns true if it exists here.
-local function applyTo(key, fields)
+local function applyTo(key, fields, seen)
     local e = S.byKey[key]
     if not (e and valid(e)) then return false end
     local last = S.setLast[key] or {}
     S.setLast[key] = last
     local current = read(e) or {}
     for name, value in pairs(fields) do
-        if type(value) == "number" and not protected(key, name, value) then
+        if type(value) == "number" and not stale(key, name, seen) then
             if not same(current[name], value) then
                 -- Recorded first, so the next scan doesn't report it back as a local change.
                 last[name] = value
@@ -119,7 +109,7 @@ local function track(e, key)
     local pending = S.setPending[key]
     if pending then
         S.setPending[key] = nil
-        applyTo(key, pending.fields)
+        applyTo(key, pending.fields, pending.seen)
     end
 end
 
@@ -163,11 +153,12 @@ local function scan()
                 end
                 S.setLast[key] = now
                 if changed then
+                    S.setSeq = S.setSeq + 1
                     local protect = S.setProtect[key] or { fields = {} }
-                    protect.tick = S.tick
+                    protect.seq = S.setSeq
                     for name, value in pairs(changed) do protect.fields[name] = value end
                     S.setProtect[key] = protect
-                    MP.emit("setting", { key = key, fields = changed })
+                    MP.emit("setting", { key = key, fields = changed, seq = S.setSeq })
                 end
             end
         end
@@ -180,7 +171,7 @@ local function applyPending()
             S.setPending[key] = nil
         elseif S.byKey[key] and valid(S.byKey[key]) then
             S.setPending[key] = nil
-            applyTo(key, pending.fields)
+            applyTo(key, pending.fields, pending.seen)
         end
     end
 end
@@ -195,15 +186,20 @@ local function snapshot()
     return entries
 end
 
--- { entries = { { key = ..., fields = { ["Component.field"] = value } }, ... }, full = bool }
+-- { entries = { { key = ..., fields = { ["Component.field"] = value } }, ... }, full = bool, seen = n }
 MP.handlers.settings = function(msg)
+    local seen = type(msg.seen) == "number" and msg.seen or 0
     for _, entry in ipairs(msg.entries or {}) do
         if type(entry.key) == "string" and type(entry.fields) == "table" then
-            if not S.readyAnnounced or not applyTo(entry.key, entry.fields) then
+            if not S.readyAnnounced or not applyTo(entry.key, entry.fields, seen) then
                 -- Not loaded yet, or a friend's object that hasn't been placed here yet.
-                S.setPending[entry.key] = { fields = entry.fields, untilTick = S.simTick + PENDING_TICKS }
+                S.setPending[entry.key] = { fields = entry.fields, seen = seen, untilTick = S.simTick + PENDING_TICKS }
             end
         end
+    end
+    -- The helper has these edits, so nothing it writes from now on is older than them.
+    for key, protect in pairs(S.setProtect) do
+        if protect.seq <= seen then S.setProtect[key] = nil end
     end
 end
 

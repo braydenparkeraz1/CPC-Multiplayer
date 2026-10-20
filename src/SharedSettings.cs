@@ -186,6 +186,9 @@ internal class SettingsDelivery
 
 	private long inFlightId;
 
+	// The pending message holds a value that Drop took out, so it has to be rewritten.
+	private bool rewrite;
+
 	public void Enqueue(string key, Dictionary<string, double> fields)
 	{
 		if (!queued.TryGetValue(key, out var current))
@@ -198,13 +201,37 @@ internal class SettingsDelivery
 		}
 	}
 
-	public void Flush(Inbox inbox)
+	// Our game changed these fields itself after the values we hold for them were decided, so those
+	// values are older: on the host they lost to this edit, on a client the host hadn't seen the edit yet.
+	public void Drop(string key, IEnumerable<string> names)
+	{
+		foreach (string name in names)
+		{
+			if (queued.TryGetValue(key, out var q) && q.Remove(name) && q.Count == 0)
+			{
+				queued.Remove(key);
+			}
+			if (inFlight != null && inFlight.TryGetValue(key, out var f) && f.Remove(name))
+			{
+				rewrite = true;
+				if (f.Count == 0)
+				{
+					inFlight.Remove(key);
+				}
+			}
+		}
+	}
+
+	// seen: the newest "setting" seq our game reported. The game skips values for a field it edited
+	// later than that (see lua/settings.lua).
+	public void Flush(Inbox inbox, long seen)
 	{
 		if (inFlight != null && inbox.LastAcked >= inFlightId)
 		{
 			inFlight = null;
+			rewrite = false;
 		}
-		if (queued.Count == 0)
+		if (queued.Count == 0 && !rewrite)
 		{
 			return;
 		}
@@ -221,14 +248,17 @@ internal class SettingsDelivery
 			}
 		}
 		queued.Clear();
+		rewrite = false;
 		inFlight = merged;
+		// Sent even when Drop emptied it, so it replaces the older message the game hasn't run.
 		inFlightId = inbox.Replace("settings", "", new Dictionary<string, object>
 		{
 			{
 				"entries",
 				merged.Select((KeyValuePair<string, Dictionary<string, double>> kv) => (object)SharedSettings.Entry(kv.Key, kv.Value)).ToList()
 			},
-			{ "full", false }
+			{ "full", false },
+			{ "seen", seen }
 		});
 	}
 
@@ -236,5 +266,6 @@ internal class SettingsDelivery
 	{
 		queued.Clear();
 		inFlight = null;
+		rewrite = false;
 	}
 }

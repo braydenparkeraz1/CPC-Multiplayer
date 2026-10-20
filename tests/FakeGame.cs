@@ -9,9 +9,10 @@
 //   exit   close the game
 //   price <key> <value>   the player set a parking price (prints a "setting" line)
 //   pause / resume        stop / start reading the inbox, like the real game while paused
+//   dump                  log every price as "price <key>=<value>"
 // Environment: FAKEGAME_IGNORE_LEAVE=1 ignores "leave" (tests the helper's force-close).
 // fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "leave: closing",
-// "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37".
+// "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37", "stale ParkingEntrance@1,8,1/0/0=0.2".
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -40,6 +41,12 @@ internal static class FakeGame
 
 	private const string PriceField = "ParkingEntry.ratePerMinute";
 
+	// Like lua/settings.lua: our edits are numbered, and an inbox value the helper wrote before it had
+	// our latest edit of that price ("seen" lower than the edit's seq) is skipped.
+	private static long settingSeq;
+
+	private static readonly Dictionary<string, long> protect = new Dictionary<string, long>();
+
 	private static string Num(double v)
 	{
 		return v.ToString("R", CultureInfo.InvariantCulture);
@@ -48,6 +55,11 @@ internal static class FakeGame
 	private static string Entry(string key, double v)
 	{
 		return "{\"key\":\"" + key + "\",\"fields\":{\"" + PriceField + "\":" + Num(v) + "}}";
+	}
+
+	private static string Setting(string key, double v, long seq)
+	{
+		return "{\"key\":\"" + key + "\",\"fields\":{\"" + PriceField + "\":" + Num(v) + "},\"seq\":" + seq + "}";
 	}
 
 	private static void Emit(string t, string d)
@@ -120,7 +132,15 @@ internal static class FakeGame
 					string[] parts = cmd.Split(' ');
 					double v = double.Parse(parts[2], CultureInfo.InvariantCulture);
 					prices[parts[1]] = v;
-					Emit("setting", Entry(parts[1], v));
+					protect[parts[1]] = ++settingSeq;
+					Emit("setting", Setting(parts[1], v, settingSeq));
+				}
+				else if (cmd == "dump")
+				{
+					foreach (KeyValuePair<string, double> kv in prices)
+					{
+						Log("price " + kv.Key + "=" + Num(kv.Value));
+					}
 				}
 			}
 			if (saveIn >= 0 && saveIn-- == 0)
@@ -190,15 +210,33 @@ internal static class FakeGame
 				else if (type == "settings")
 				{
 					// {["key"]="...",["fields"]={["ParkingEntry.ratePerMinute"]=0.37,},}
+					Match seenMatch = Regex.Match(m.Groups[3].Value, "\\[\"seen\"\\]=(\\d+)");
+					long seen = seenMatch.Success ? long.Parse(seenMatch.Groups[1].Value) : 0;
 					foreach (Match e in Regex.Matches(m.Groups[3].Value, "\\[\"key\"\\]=\"([^\"]+)\",\\[\"fields\"\\]=\\{\\[\"" + Regex.Escape(PriceField) + "\"\\]=([-0-9.Ee+]+)"))
 					{
 						string key = e.Groups[1].Value;
 						double v = double.Parse(e.Groups[2].Value, CultureInfo.InvariantCulture);
-						if (!prices.TryGetValue(key, out var old) || Math.Abs(old - v) > 1e-9)
+						if (protect.TryGetValue(key, out var mine) && seen < mine)
+						{
+							Log("stale " + key + "=" + Num(v));
+						}
+						else if (!prices.TryGetValue(key, out var old) || Math.Abs(old - v) > 1e-9)
 						{
 							prices[key] = v;
 							Log("applied " + key + " " + PriceField + "=" + Num(v));
 						}
+					}
+					List<string> done = new List<string>();
+					foreach (KeyValuePair<string, long> kv in protect)
+					{
+						if (kv.Value <= seen)
+						{
+							done.Add(kv.Key);
+						}
+					}
+					foreach (string key in done)
+					{
+						protect.Remove(key);
 					}
 				}
 				else if (type == "leave")

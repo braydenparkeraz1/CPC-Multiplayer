@@ -53,8 +53,11 @@ Windows user name.
   - The host's game holds the true values. Clients send only what they changed. The host applies changes in the order
     they arrive, broadcasts what changed every 2 s, and sends a full copy every 30 s and to anyone who finishes loading
     its city.
-  - The mod (`lua/settings.lua`) applies only values that differ. It keeps its own fresh edit for about 5 s, so the edit
-    doesn't flicker back, and holds a friend's price until that friend's object exists here.
+  - The mod (`lua/settings.lua`) applies only values that differ, and holds a friend's price until that friend's object
+    exists here.
+  - Edits are numbered, so a player's own edit isn't undone by an older value that was already on its way (no flicker
+    while dragging the slider). Every newer value still applies: when two players change the same price at once, the
+    one that reaches the host last wins on every PC.
   - Inbox messages of this kind replace each other, so a paused or loading game doesn't collect stale copies.
   - Only exchanged with 0.4.0 peers.
 - `--dev` developer console (see above).
@@ -116,9 +119,10 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `ping` | both | Keep-alive, every 3 s (0.3.0) |
 | `hostleft` | host → client | The host left its city (0.3.0) |
 | `bye` | host → client | The host is shutting down (0.3.0) |
-| `setting` | client → host | The client's player changed a price: `key` and `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) (0.4.0) |
-| `settings` | host → client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`) (0.4.0) |
+| `setting` | client → host | The client's player changed a price: `key`, `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) and `seq`, which counts up (0.4.0) |
+| `settings` | host → client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`). `ack` is the newest `seq` from this client the host had applied; the client skips objects it changed after that (0.4.0) |
 | `sync?` | client → host | Sent after loading the host's city: asks for every current price (0.4.0) |
 
 Between the helper and the game (inbox → game, `MP>` lines → helper), 0.4.0 adds `setting` (game → helper, a local
-change), inbox `settings` (apply these), inbox `settings?` (reply with all values) and its `settings` reply.
+change, with its own `seq`), inbox `settings` (apply these; `seen` is the newest `seq` the helper had, so the game skips
+values for a field it changed later), inbox `settings?` (reply with all values) and its `settings` reply.

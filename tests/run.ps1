@@ -306,6 +306,7 @@ function Scenario-LobbyHostGoneBeforeCity {
 # ---- 0.4.0 prices and other player-set values ----
 
 $K1 = "ParkingEntrance@10,8,20/0/0"
+$K2 = "ParkingEntrance@12,8,20/0/0"
 
 function Applied([string]$key, [string]$value) { return [regex]::Escape("applied $key ParkingEntry.ratePerMinute=$value") }
 
@@ -364,9 +365,68 @@ function Scenario-PriceCoalesce {
     Write-Host "    ok: stale prices skipped"
 }
 
+function Final([string]$key, [string]$value) { return [regex]::Escape("price $key=$value") }
+
+# Both games end with the same price; checked with the fake game's "dump".
+function Expect-Both($s, [string]$key, [string]$value) {
+    Start-Sleep -Seconds 3
+    Game $s.h "dump"; Game $s.c "dump"
+    Expect "host game ends at $value" { GameLog $s.h } (Final $key $value)
+    Expect "client game ends at $value" { GameLog $s.c } (Final $key $value)
+}
+
+function Scenario-PriceBothEdit {
+    # The host edits, then the client edits the same entrance right after: the client's change
+    # reaches the host later, so it wins, and the host's game must not hold on to its own edit.
+    $s = Start-HostAndClient (Next-Port)
+    Game $s.h "price $K1 0.2"
+    Start-Sleep -Milliseconds 400
+    Game $s.c "price $K1 0.4"
+    Expect "host game takes the later price" { GameLog $s.h } (Applied $K1 "0.4") 1 10
+    Expect-Both $s $K1 "0.4"
+}
+
+function Scenario-PriceStaleAtHost {
+    # A client's price waits in the paused host game's inbox, then the host edits the same entrance.
+    # The host's edit came later, so the waiting value must never be applied, even when the next
+    # message (for another entrance) is written after the helper knows about the edit.
+    $s = Start-HostAndClient (Next-Port)
+    Game $s.h "pause"
+    Game $s.c "price $K1 0.4"
+    Expect "host helper gets the client's price" { HelperLog $s.h } "\[Clienty\] changed ParkingEntrance"
+    Start-Sleep -Milliseconds 500
+    Game $s.h "price $K1 0.2"
+    Start-Sleep -Milliseconds 500
+    Game $s.c "price $K2 0.3"
+    Expect "host helper gets the second price" { HelperLog $s.h } "\[Clienty\] changed ParkingEntrance" 2
+    Start-Sleep -Milliseconds 500
+    Game $s.h "resume"
+    Expect "host game gets the other entrance" { GameLog $s.h } (Applied $K2 "0.3") 1 10
+    if ((GameLog $s.h) -match (Applied $K1 "0.4")) { throw "the host game applied a price older than its own edit" }
+    Write-Host "    ok: the host game kept its own later edit"
+    Expect "client game gets the host's edit" { GameLog $s.c } (Applied $K1 "0.2") 1 10
+    Expect-Both $s $K1 "0.2"
+}
+
+function Scenario-PriceStaleAtClient {
+    # The host's price waits in the paused client game's inbox, then the client edits the same entrance.
+    $s = Start-HostAndClient (Next-Port)
+    Game $s.c "pause"
+    Game $s.h "price $K1 0.2"
+    Expect "client helper gets the host's price" { HelperLog $s.c } "host settings: 1\r?\n" 1 10
+    Game $s.c "price $K1 0.4"
+    Expect "host game gets the client's edit" { GameLog $s.h } (Applied $K1 "0.4") 1 10
+    Start-Sleep -Seconds 3
+    Game $s.c "resume"
+    Expect-Both $s $K1 "0.4"
+    if ((GameLog $s.c) -match (Applied $K1 "0.2")) { throw "the client game applied a price older than its own edit" }
+    Write-Host "    ok: the client game kept its own later edit"
+}
+
 $scenarios = @("HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
     "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
-    "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce")
+    "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
+    "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }
