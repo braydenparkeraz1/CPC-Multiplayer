@@ -33,7 +33,7 @@ internal static class GameInstall
 
 	private const int PainterCount = 14;
 
-	private static readonly string[] LuaModules = new string[6] { "boot", "util", "inbox", "hooks", "sync", "settings" };
+	private static readonly string[] LuaModules = new string[7] { "boot", "util", "inbox", "hooks", "sync", "settings", "money" };
 
 	private static readonly Patch[] Patches = new Patch[3]
 	{

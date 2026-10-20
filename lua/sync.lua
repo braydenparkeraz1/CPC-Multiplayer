@@ -292,6 +292,10 @@ function MP.onTick()
         local ok, err = pcall(MP.settingsTick)
         if not ok then MP.log("settings error: " .. tostring(err)) end
     end
+    if MP.moneyTick then
+        local ok, err = pcall(MP.moneyTick)
+        if not ok then MP.log("money error: " .. tostring(err)) end
+    end
     if not S.readyAnnounced and S.tick >= S.readyTick then
         S.readyAnnounced = true
         local count = 0

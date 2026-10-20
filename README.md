@@ -6,6 +6,29 @@ plus Lua scripts it installs into the game.
 The 0.2.0 source was recovered from the original `CPC-Multiplayer.exe` (a .NET Framework 4.0 console app, not obfuscated)
 by decompiling it with ILSpy; that is the first commit. The Lua files in `lua/` were embedded resources in the exe.
 
+## Quick start
+
+Every player needs the game and `CPC-Multiplayer.exe` (see [Build](#build)). The helper finds the game in your Steam
+library and installs the mod scripts by itself.
+
+1. **Host:** run `CPC-Multiplayer.exe host`. The game starts; load or start the city you want to share. When a friend
+   joins, save the city (Esc > Save) so they get the version you're playing.
+2. **Friends:** run `CPC-Multiplayer.exe join <host's IP>`. The game starts and loads the host's city.
+3. Play. Builds, demolitions, roads, floors, land, prices and money are shared. Close the game or type `quit` to stop.
+
+Or run `CPC-Multiplayer.exe lobby` and type `host` or `join <ip>` once the game is up. Over the internet the host
+needs TCP port 27777 forwarded (or `--port`). Every player must run the same version.
+
+What is shared:
+
+| Shared | How |
+|---|---|
+| Objects (buildings, entrances, decorations) | Placed and demolished on every PC |
+| Roads, floors, land ownership | Copied through the game's memory |
+| Parking prices | The host's value wins; anyone can change them (0.4.0) |
+| Money | One wallet, the host's. Everyone's builds are paid from it (0.4.0) |
+| Cars, traffic, how full garages are | **Not shared**: each PC simulates its own |
+
 ## Build
 
 ```
@@ -60,6 +83,22 @@ Windows user name.
     one that reaches the host last wins on every PC.
   - Inbox messages of this kind replace each other, so a paused or loading game doesn't collect stale copies.
   - Only exchanged with 0.4.0 peers.
+- **Money is shared.** The host's balance is the city's wallet, and every player sees it.
+  - Lua can change the money but not read it, so the helper finds the balance in the game's memory (`src/MoneySync.cs`):
+    it scans for values near the balance in the city's save, the mod adds and takes back a $500 marker, and of the
+    values that moved with it, the balance is the one whose HUD copy follows a small nudge. This takes about 20 s after a
+    city loads, and shows as "Shared money: on".
+  - The host's helper sends its balance every 2 s (at least every 10 s). A friend's helper writes it into its own game,
+    so a friend's own simulation earns and pays nothing.
+  - A friend's build is charged by their game and sent to the host as a numbered `spend`, which the host's game applies
+    once (`transactMoney`). Prices come from the game's template scripts (`src/Prices.cs`); demolitions give half back
+    unless the template says otherwise. Roads and floors cost their material's price per tile. Land plots, and builds
+    missing from the table, are charged what the friend's game spent (not tried in game yet: before this, a friend's
+    land purchase was free).
+  - Until the host has applied a friend's spend, the friend sees it already taken off, so the money doesn't bounce.
+  - Money can go negative; nothing gets removed.
+  - Known gaps: removing or reshaping tiles is free; the refund rules for the 14 drive-thru templates (full refund) and
+    for old objects aren't measured; selling land isn't refunded.
 - `--dev` developer console (see above).
 
 ## Changes in 0.3.0
@@ -100,6 +139,9 @@ Windows user name.
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; runs the repaint queue; reports the map size |
 | `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices (0.4.0) |
 | `src/SharedSettings.cs` | The host's price table (whitelist, ranges, what changed) and the queue of prices for our game (0.4.0) |
+| `lua/money.lua` | Marker transactions for finding the money; applies friends' spends on the host (0.4.0) |
+| `src/MoneySync.cs` | Finds, reads and writes the city's money in the game's memory (0.4.0) |
+| `src/Prices.cs`, `SaveFile.cs` | Build and tile prices from the game's scripts; the balance in a save (zlib + CBOR) (0.4.0) |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
 | `tests/FakeGame.cs`, `run.ps1` | Stand-in for the game and the scenario runner, for testing the helper's networking without it (see `tests/README.md`) |
@@ -121,8 +163,12 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `bye` | host → client | The host is shutting down (0.3.0) |
 | `setting` | client → host | The client's player changed a price: `key`, `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) and `seq`, which counts up (0.4.0) |
 | `settings` | host → client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`). `ack` is the newest `seq` from this client the host had applied; the client skips objects it changed after that (0.4.0) |
-| `sync?` | client → host | Sent after loading the host's city: asks for every current price (0.4.0) |
+| `sync?` | client → host | Sent after loading the host's city: asks for every current price and the money (0.4.0) |
+| `spend` | client → host | The client's build or demolition: `id` (counts up), `amount` (negative for a refund), `reason`, `key`. Applied once per `id` (0.4.0) |
+| `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). Every 2 s when it changes, at least every 10 s, and after `sync?` (0.4.0) |
 
 Between the helper and the game (inbox → game, `MP>` lines → helper), 0.4.0 adds `setting` (game → helper, a local
 change, with its own `seq`), inbox `settings` (apply these; `seen` is the newest `seq` the helper had, so the game skips
-values for a field it changed later), inbox `settings?` (reply with all values) and its `settings` reply.
+values for a field it changed later), inbox `settings?` (reply with all values) and its `settings` reply. For money:
+inbox `moneymark` (`mark`, `amount`: add it, take it back ~0.5 s later, reporting each step as `moneymark`) and inbox
+`spend` (host only: `spent` and `refunded` from friends).

@@ -160,6 +160,63 @@ internal class Session
 
 	private readonly Dictionary<string, long> settingsSentAt = new Dictionary<string, long>();
 
+	// Shared money (0.4.0). The host's balance is the city's wallet: the host reads it from its game's
+	// memory and sends it out, and clients write it into theirs. Friends' builds reach the host as spends.
+	private readonly MoneySync money = new MoneySync();
+
+	private Prices prices;
+
+	private int moneyAttempts;
+
+	private DateTime lastMoneyAttempt = DateTime.MinValue;
+
+	private bool moneyAnnounced;
+
+	private bool moneyWasSearching;
+
+	private DateTime lastMoneyWrite = DateTime.MinValue;
+
+	// Client: when our game's money first fell below what we wrote. A purchase is charged by our game a
+	// moment before its event (place, tiles, land) tells us about it, so the drop isn't undone at once.
+	private DateTime moneyDropSeen = DateTime.MinValue;
+
+	private static readonly TimeSpan SpendHold = TimeSpan.FromSeconds(1.5);
+
+	// Client: the host's last balance, and our spends it hasn't applied yet (id -> amount).
+	private double? hostMoney;
+
+	private long spendSeq;
+
+	private readonly SortedDictionary<long, double> spendsPending = new SortedDictionary<long, double>();
+
+	// Host: friends' spends waiting for our game, then the inbox messages carrying them until it acks.
+	private readonly List<Spend> spendsQueued = new List<Spend>();
+
+	private readonly List<KeyValuePair<long, List<Spend>>> spendsInFlight = new List<KeyValuePair<long, List<Spend>>>();
+
+	private readonly HashSet<string> unpriced = new HashSet<string>();
+
+	private static readonly Regex EventKey = new Regex("^([A-Za-z0-9_]+)@\\d+,\\d+,\\d+/\\d+/(\\d+)$");
+
+	private static readonly TimeSpan MoneyWriteInterval = TimeSpan.FromSeconds(0.25);
+
+	private static readonly TimeSpan MoneyInterval = TimeSpan.FromSeconds(2.0);
+
+	private static readonly TimeSpan MoneyKeepAlive = TimeSpan.FromSeconds(10.0);
+
+	private static readonly TimeSpan MoneyRetry = TimeSpan.FromSeconds(60.0);
+
+	private const int MaxMoneyAttempts = 5;
+
+	private class Spend
+	{
+		public Peer Peer;
+
+		public long Id;
+
+		public double Amount;
+	}
+
 	private static readonly TimeSpan TilePollInterval = TimeSpan.FromSeconds(1.0);
 
 	private static readonly TimeSpan LocateRetry = TimeSpan.FromSeconds(10.0);
@@ -340,6 +397,14 @@ internal class Session
 			catch (Exception ex4)
 			{
 				Ui.Log("settings sync error: " + ex4);
+			}
+			try
+			{
+				MoneyTick();
+			}
+			catch (Exception ex5)
+			{
+				Ui.Log("money sync error: " + ex5);
 			}
 			if (DateTime.UtcNow - lastTilePoll >= TilePollInterval)
 			{
@@ -810,12 +875,21 @@ internal class Session
 		{
 			Ui.Log("local tile changes: " + list.Count);
 			ShareTiles(list, null);
+			if (!isHost)
+			{
+				SendSpend(list.Sum((TileChange c) => PriceTable.TileCost(c)), "tiles", list.Count + " tiles");
+			}
 		}
 		List<KeyValuePair<int, byte>> list2 = tiles.PollLand();
 		if (list2.Count > 0)
 		{
 			Ui.Log("local land changes: " + list2.Count);
 			ShareLand(list2, null);
+			if (!isHost && InHostCity)
+			{
+				// Plot prices aren't per cell (199 cells cost 7177.50, 250 cost 4300), so measure them.
+				ChargeMeasured("land", list2.Count + " cells");
+			}
 		}
 		if (landToApply.Count > 0 && tiles.LandActive)
 		{
@@ -1245,6 +1319,7 @@ internal class Session
 			StopTileSync();
 			settingsToGame.Clear();
 			gameSettingSeq = 0;
+			ResetMoney();
 			if (isHost && wasInCity)
 			{
 				HostLeftCity();
@@ -1375,6 +1450,14 @@ internal class Session
 		case "setting":
 			OnLocalSetting(d2);
 			break;
+		case "moneymark":
+		{
+			if (Util.Int(d2, "mark") is long markId && Util.Int(d2, "step") is long markStep)
+			{
+				money.OnMark(markId, (int)markStep);
+			}
+			break;
+		}
 		case "settings":
 			// Our game's full snapshot (answer to "settings?"); only the host's is the truth.
 			if (isHost && InSharedCity)
@@ -1448,6 +1531,8 @@ internal class Session
 		toGame.Clear();
 		settingsToGame.Clear();
 		settingsSentAt.Clear();
+		spendsPending.Clear();
+		hostMoney = null;
 		tilesToApply.Clear();
 		landToApply.Clear();
 		StopTileSync();
@@ -1527,6 +1612,7 @@ internal class Session
 					{ "t", "ev" },
 					{ "ev", dictionary }
 				});
+				ChargeBuild(type, (string)dictionary["key"]);
 			}
 		}
 	}
@@ -1613,6 +1699,271 @@ internal class Session
 			{ "full", full },
 			{ "ack", peer.SettingSeq }
 		};
+	}
+
+	private Prices PriceTable => prices ?? (prices = Prices.Load(gameDir));
+
+	// A new city in our game: its money is somewhere else in memory.
+	private void ResetMoney()
+	{
+		money.Reset();
+		moneyAttempts = 0;
+		lastMoneyAttempt = DateTime.MinValue;
+		moneyAnnounced = false;
+		moneyWasSearching = false;
+		spendsQueued.Clear();
+		spendsInFlight.Clear();
+	}
+
+	private void MoneyTick()
+	{
+		money.Tick();
+		bool searching = money.Searching;
+		if (moneyWasSearching && !searching && !money.Located)
+		{
+			ReportMoneyFailure();
+		}
+		moneyWasSearching = searching;
+		if (money.Located && !moneyAnnounced)
+		{
+			moneyAnnounced = true;
+			Ui.Good(isHost ? "Shared money: on. Your balance is the city's wallet." : "Shared money: on. Your balance follows the host's.");
+		}
+		if (isHost)
+		{
+			HostMoneyTick();
+		}
+		else if (InSharedCity && InHostCity && !kicked && host != null && SharedSettings.PeerSupports(host.Version))
+		{
+			ClientMoneyTick();
+		}
+	}
+
+	// Looks for our game's balance near the one in save, when a search is due. Only while the game is
+	// running: the mod makes the marker transactions, and it stops while paused.
+	private void LocateMoney(string save)
+	{
+		if (save == null || money.Located || money.Searching || !gameReady || !GameRunning || game.Id == 0)
+		{
+			return;
+		}
+		if (moneyAttempts >= MaxMoneyAttempts || DateTime.UtcNow - lastMoneyAttempt < MoneyRetry)
+		{
+			return;
+		}
+		moneyAttempts++;
+		lastMoneyAttempt = DateTime.UtcNow;
+		double? expected = SaveFile.ReadBalance(save);
+		if (expected == null || !money.Attach(game.Id))
+		{
+			Ui.Log("money search skipped: " + ((expected == null) ? ("no balance in " + Path.GetFileName(save)) : money.Status));
+			ReportMoneyFailure();
+			return;
+		}
+		// The save can be minutes old, and the markers sort out what's near by chance.
+		double margin = Math.Max(20000.0, Math.Abs(expected.Value) * 0.5);
+		Ui.Log($"money search {moneyAttempts}: near {expected.Value:0.##} (from {Path.GetFileName(save)})");
+		money.Start(expected.Value, margin, delegate(long id)
+		{
+			inbox.Add("moneymark", new Dictionary<string, object>
+			{
+				{ "mark", id },
+				{ "amount", MoneySync.Marker }
+			});
+		});
+	}
+
+	private void ReportMoneyFailure()
+	{
+		if (moneyAttempts >= MaxMoneyAttempts)
+		{
+			Ui.Warn("Money isn't shared in this city: couldn't find it in the game (" + money.Status + "). Prices and building still sync.");
+		}
+		else if (moneyAttempts == 1)
+		{
+			Ui.Warn("Money isn't shared yet (" + money.Status + "). Trying again in a minute.");
+		}
+	}
+
+	private void HostMoneyTick()
+	{
+		// Friends' spends count as applied once our game has run the message carrying them.
+		foreach (KeyValuePair<long, List<Spend>> batch in spendsInFlight.Where((KeyValuePair<long, List<Spend>> b) => b.Key <= inbox.LastAcked).ToList())
+		{
+			foreach (Spend spend in batch.Value)
+			{
+				spend.Peer.SpendApplied = Math.Max(spend.Peer.SpendApplied, spend.Id);
+			}
+			spendsInFlight.Remove(batch);
+		}
+		if (!InSharedCity)
+		{
+			return;
+		}
+		if (spendsQueued.Count > 0)
+		{
+			// Never coalesced with Inbox.Replace: a message the game already ran would be charged again.
+			double spent = spendsQueued.Where((Spend s) => s.Amount > 0.0).Sum((Spend s) => s.Amount);
+			double refunded = -spendsQueued.Where((Spend s) => s.Amount < 0.0).Sum((Spend s) => s.Amount);
+			long id = inbox.Add("spend", new Dictionary<string, object>
+			{
+				{ "spent", spent },
+				{ "refunded", refunded }
+			});
+			spendsInFlight.Add(new KeyValuePair<long, List<Spend>>(id, spendsQueued.ToList()));
+			spendsQueued.Clear();
+		}
+		List<Peer> targets = peers.Where((Peer p) => p.Hello && !p.Closed && SharedSettings.PeerSupports(p.Version)).ToList();
+		if (targets.Count == 0)
+		{
+			return;
+		}
+		LocateMoney(NewestSave()?.FullName);
+		if (!money.Located)
+		{
+			return;
+		}
+		DateTime now = DateTime.UtcNow;
+		double? value = null;
+		foreach (Peer p in targets)
+		{
+			if (now - p.MoneySentAt < MoneyInterval)
+			{
+				continue;
+			}
+			value = value ?? money.Read();
+			if (value == null)
+			{
+				return;
+			}
+			if (now - p.MoneySentAt >= MoneyKeepAlive || p.MoneyAckSent != p.SpendApplied || Math.Abs(p.MoneySent - value.Value) > 0.005 || double.IsNaN(p.MoneySent))
+			{
+				SendMoney(p, value.Value);
+			}
+		}
+	}
+
+	// Read after the acks above were counted, so the value includes every spend it acks.
+	private void SendMoney(Peer p, double? known = null)
+	{
+		double? value = known ?? money.Read();
+		if (value == null)
+		{
+			return;
+		}
+		p.MoneySent = value.Value;
+		p.MoneyAckSent = p.SpendApplied;
+		p.MoneySentAt = DateTime.UtcNow;
+		p.Send(new Dictionary<string, object>
+		{
+			{ "t", "money" },
+			{ "value", value.Value },
+			{ "ack", p.SpendApplied }
+		});
+	}
+
+	private void ClientMoneyTick()
+	{
+		LocateMoney((worldSaveName != null) ? Path.Combine(gameDir, "saves", worldSaveName) : null);
+		if (!money.Located || hostMoney == null || DateTime.UtcNow - lastMoneyWrite < MoneyWriteInterval)
+		{
+			return;
+		}
+		lastMoneyWrite = DateTime.UtcNow;
+		// What our own game earns and pays doesn't count: the host's balance is the wallet. Our spends
+		// the host hasn't applied yet come off it, so a purchase doesn't bounce back up meanwhile.
+		double target = hostMoney.Value - spendsPending.Values.Sum();
+		double? current = money.Read();
+		if (current == null)
+		{
+			return;
+		}
+		double gap = target - current.Value;
+		if (gap > 1.0)
+		{
+			if (moneyDropSeen == DateTime.MinValue)
+			{
+				moneyDropSeen = DateTime.UtcNow;
+			}
+			if (DateTime.UtcNow - moneyDropSeen < SpendHold)
+			{
+				return;
+			}
+			// Nothing explained it: our own simulation's costs, which the host's balance replaces.
+			Ui.Log($"our game spent {gap:0.##} that no build explains; undone");
+		}
+		moneyDropSeen = DateTime.MinValue;
+		if (Math.Abs(gap) > 0.005)
+		{
+			money.Write(target);
+		}
+	}
+
+	// Client: for what we can't price (land, a build missing from the price table), the cost is what
+	// our game just spent beyond the spends we already sent. Only spending counts: a rise is our own
+	// simulation's income, which doesn't belong to the wallet.
+	private void ChargeMeasured(string reason, string key)
+	{
+		double? current = money.Read();
+		if (current == null || hostMoney == null)
+		{
+			Ui.Log(reason + " " + key + " not charged: our money isn't known yet");
+			return;
+		}
+		double gap = hostMoney.Value - spendsPending.Values.Sum() - current.Value;
+		if (gap > 1.0)
+		{
+			SendSpend(Math.Round(gap, 2), reason, key);
+		}
+		else
+		{
+			Ui.Log($"{reason} {key}: our game charged nothing we can see ({gap:0.##})");
+		}
+	}
+
+	// Client: our game charged itself for this build (or refunded a demolition); pass it on to the host.
+	// Copies of builds are free everywhere, so this is the only charge to the wallet.
+	private void ChargeBuild(string type, string key)
+	{
+		Match m = EventKey.Match(key ?? "");
+		if (!m.Success)
+		{
+			return;
+		}
+		string tpl = m.Groups[1].Value;
+		int variant = int.Parse(m.Groups[2].Value);
+		double? amount = (type == "place") ? PriceTable.BuildPrice(tpl, variant) : (-PriceTable.Refund(tpl, variant));
+		if (amount == null)
+		{
+			if (unpriced.Add(tpl))
+			{
+				Ui.Log("no build price known for " + tpl + ((type == "place") ? ", charging what our game spent" : ", no refund"));
+			}
+			if (type == "place")
+			{
+				ChargeMeasured(type, key);
+			}
+			return;
+		}
+		SendSpend(amount.Value, type, key);
+	}
+
+	private void SendSpend(double amount, string reason, string key)
+	{
+		if (amount == 0.0 || !InSharedCity || !InHostCity || kicked || host == null || !SharedSettings.PeerSupports(host.Version))
+		{
+			return;
+		}
+		long id = ++spendSeq;
+		spendsPending[id] = amount;
+		host.Send(new Dictionary<string, object>
+		{
+			{ "t", "spend" },
+			{ "id", id },
+			{ "amount", amount },
+			{ "reason", reason },
+			{ "key", key }
+		});
 	}
 
 	private static Dictionary<string, object> SanitizeEvent(string type, Dictionary<string, object> d)
@@ -1880,8 +2231,40 @@ internal class Session
 				{
 					p.Send(SettingsMessage(p, all, full: true));
 				}
+				if (money.Located)
+				{
+					SendMoney(p);
+				}
 			}
 			break;
+		case "spend":
+		{
+			// A client built or demolished: its game charged only itself, so charge the city's wallet.
+			// Each id counts once.
+			long? spendId = Util.Int(m, "id");
+			if (spendId == null || spendId.Value <= p.SpendSeen)
+			{
+				break;
+			}
+			p.SpendSeen = spendId.Value;
+			double? amount = Util.Double(m, "amount");
+			if (amount != null && Math.Abs(amount.Value) <= 10000000.0 && InSharedCity && SharedSettings.PeerSupports(p.Version))
+			{
+				spendsQueued.Add(new Spend
+				{
+					Peer = p,
+					Id = spendId.Value,
+					Amount = amount.Value
+				});
+				Ui.Log($"[{p.Name}] {((amount.Value >= 0.0) ? "spent" : "got back")} {Math.Abs(amount.Value):0.##} ({Util.Str(m, "reason")} {Util.Str(m, "key")})");
+			}
+			else
+			{
+				// Refused: there's nothing for them to wait for.
+				p.SpendApplied = Math.Max(p.SpendApplied, spendId.Value);
+			}
+			break;
+		}
 		case "chat":
 		{
 			string text3 = Util.Str(m, "text") ?? "";
@@ -2218,6 +2601,22 @@ internal class Session
 			}
 			break;
 		}
+		case "money":
+		{
+			// The host's balance, and the newest of our spends it has applied.
+			double? value = Util.Double(m, "value");
+			if (value != null && !kicked)
+			{
+				long ack = Util.Int(m, "ack") ?? 0;
+				foreach (long id in spendsPending.Keys.Where((long k) => k <= ack).ToList())
+				{
+					spendsPending.Remove(id);
+				}
+				hostMoney = value;
+				lastMoneyWrite = DateTime.MinValue;
+			}
+			break;
+		}
 		case "settings":
 			// The host's prices; the game applies only the ones that differ from its own.
 			if (!kicked)
@@ -2286,6 +2685,8 @@ internal class Session
 		toGame.Clear();
 		settingsToGame.Clear();
 		settingsSentAt.Clear();
+		spendsPending.Clear();
+		hostMoney = null;
 		tilesToApply.Clear();
 		tilesToApply.AddRange(TileSync.Unpack(Util.Str(m, "tiles")));
 		landToApply.Clear();

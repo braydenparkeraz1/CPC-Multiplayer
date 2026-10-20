@@ -503,13 +503,17 @@ internal class TileSync : IDisposable
 							int index = j / 2;
 							if (!inFlight.Contains(index))
 							{
+								byte oldShape = ptr2[j];
+								byte oldMat = ptr2[j + 1];
 								ptr2[j] = ptr[j];
 								ptr2[j + 1] = ptr[j + 1];
 								list.Add(new TileChange
 								{
 									Index = index,
 									Shape = ptr[j],
-									Mat = ptr[j + 1]
+									Mat = ptr[j + 1],
+									OldShape = oldShape,
+									OldMat = oldMat
 								});
 							}
 						}

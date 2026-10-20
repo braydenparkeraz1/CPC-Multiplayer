@@ -34,6 +34,19 @@ internal class Peer
 	// Host: the newest "setting" seq this client sent that we've applied; our "settings" carry it as "ack".
 	public long SettingSeq;
 
+	// Host: the newest spend id from this client we've taken, and the newest our game has applied
+	// (sent as "ack" with our money).
+	public long SpendSeen;
+
+	public long SpendApplied;
+
+	// Host: what we last sent this client as our money, and when.
+	public double MoneySent = double.NaN;
+
+	public long MoneyAckSent;
+
+	public DateTime MoneySentAt = DateTime.MinValue;
+
 	// When data last arrived from the other side (DateTime.UtcNow ticks).
 	private long lastReceived = DateTime.UtcNow.Ticks;
 

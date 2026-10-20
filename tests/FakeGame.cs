@@ -9,7 +9,12 @@
 //   exit   close the game
 //   price <key> <value>   the player set a parking price (prints a "setting" line)
 //   pause / resume        stop / start reading the inbox, like the real game while paused
-//   dump                  log every price as "price <key>=<value>"
+//   dump                  log every price as "price <key>=<value>", and "money=<value>"
+//   money <value>         set the city's money (income or upkeep of our own simulation)
+//   place <key> <cost>    the player built something: we pay cost and print a "place" line
+//   demolish <key> <refund>  the player demolished something: we get refund back
+// The money lives in native memory like the game's, so the helper has to find it by scanning this
+// process (inbox "moneymark") and reads or writes it there. Inbox "spend" charges it.
 // Environment: FAKEGAME_IGNORE_LEAVE=1 ignores "leave" (tests the helper's force-close).
 // fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "leave: closing",
 // "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37", "stale ParkingEntrance@1,8,1/0/0=0.2".
@@ -17,6 +22,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
@@ -46,6 +54,147 @@ internal static class FakeGame
 	private static long settingSeq;
 
 	private static readonly Dictionary<string, long> protect = new Dictionary<string, long>();
+
+	// The balance, a copy refreshed from it every tick (like the HUD's), and a value that moves with
+	// every transaction but ignores writes to the balance (like the statistic that matched in game).
+	private static readonly IntPtr balanceMem = Marshal.AllocHGlobal(64);
+
+	private static readonly IntPtr displayMem = Marshal.AllocHGlobal(64);
+
+	private static readonly IntPtr statMem = Marshal.AllocHGlobal(64);
+
+	private const double StartMoney = 60000.25;
+
+	private static long markId;
+
+	private static double markAmount;
+
+	private static int markUndoAt = -1;
+
+	private static double Get(IntPtr p)
+	{
+		return BitConverter.Int64BitsToDouble(Marshal.ReadInt64(p));
+	}
+
+	private static void Set(IntPtr p, double v)
+	{
+		Marshal.WriteInt64(p, BitConverter.DoubleToInt64Bits(v));
+	}
+
+	private static void Transact(double amount)
+	{
+		Set(balanceMem, Get(balanceMem) + amount);
+		Set(statMem, Get(statMem) + amount);
+	}
+
+	private static void SetMoney(double v)
+	{
+		Set(balanceMem, v);
+		Set(displayMem, v);
+		Set(statMem, v + 2.75);
+	}
+
+	private static byte[] CborText(string s)
+	{
+		byte[] b = Encoding.UTF8.GetBytes(s);
+		byte[] r = new byte[b.Length + 1];
+		r[0] = (byte)(0x60 + b.Length);
+		Buffer.BlockCopy(b, 0, r, 1, b.Length);
+		return r;
+	}
+
+	// zlib( u64 cborLength | CBOR {"rooms":[{"money":{"balance":X}}]} | u64 0 ), the game's save layout.
+	private static byte[] SaveBytes(double balance)
+	{
+		MemoryStream cbor = new MemoryStream();
+		cbor.WriteByte(0xA1);
+		cbor.Write(CborText("rooms"), 0, 6);
+		cbor.WriteByte(0x81);
+		cbor.WriteByte(0xA1);
+		cbor.Write(CborText("money"), 0, 6);
+		cbor.WriteByte(0xA1);
+		cbor.Write(CborText("balance"), 0, 8);
+		cbor.WriteByte(0xFB);
+		byte[] bits = BitConverter.GetBytes(balance);
+		Array.Reverse(bits);
+		cbor.Write(bits, 0, 8);
+		MemoryStream raw = new MemoryStream();
+		raw.Write(BitConverter.GetBytes(cbor.Length), 0, 8);
+		raw.Write(cbor.ToArray(), 0, (int)cbor.Length);
+		raw.Write(BitConverter.GetBytes(0L), 0, 8);
+		byte[] data = raw.ToArray();
+		MemoryStream file = new MemoryStream();
+		file.WriteByte(0x78);
+		file.WriteByte(0x9C);
+		using (DeflateStream deflate = new DeflateStream(file, CompressionMode.Compress, leaveOpen: true))
+		{
+			deflate.Write(data, 0, data.Length);
+		}
+		uint a = 1, b = 0;
+		foreach (byte x in data)
+		{
+			a = (a + x) % 65521;
+			b = (b + a) % 65521;
+		}
+		uint adler = (b << 16) | a;
+		file.WriteByte((byte)(adler >> 24));
+		file.WriteByte((byte)(adler >> 16));
+		file.WriteByte((byte)(adler >> 8));
+		file.WriteByte((byte)adler);
+		return file.ToArray();
+	}
+
+	private static double? SaveBalance(string path)
+	{
+		try
+		{
+			using (FileStream f = File.OpenRead(path))
+			{
+				f.ReadByte();
+				f.ReadByte();
+				using (DeflateStream inflate = new DeflateStream(f, CompressionMode.Decompress))
+				{
+					MemoryStream all = new MemoryStream();
+					inflate.CopyTo(all);
+					byte[] d = all.ToArray();
+					byte[] key = CborText("balance");
+					for (int i = 0; i + key.Length + 9 <= d.Length; i++)
+					{
+						int k = 0;
+						while (k < key.Length && d[i + k] == key[k])
+						{
+							k++;
+						}
+						if (k == key.Length && d[i + k] == 0xFB)
+						{
+							byte[] bits = new byte[8];
+							Array.Copy(d, i + k + 1, bits, 0, 8);
+							Array.Reverse(bits);
+							return BitConverter.ToDouble(bits, 0);
+						}
+					}
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			Log("save unreadable: " + ex.Message);
+		}
+		return null;
+	}
+
+	private static double Field(string text, string name)
+	{
+		Match m = Regex.Match(text, "\\[\"" + name + "\"\\]=(-?[0-9.Ee+]+)");
+		return m.Success ? double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : 0.0;
+	}
+
+	// TestFlag@10,8,20/0/0 -> the "place" line the mod would print.
+	private static string PlaceInfo(string key)
+	{
+		Match m = Regex.Match(key, "^(\\w+)@(\\d+),(\\d+),(\\d+)/(\\d+)/(\\d+)$");
+		return "{\"key\":\"" + key + "\",\"tpl\":\"" + m.Groups[1].Value + "\",\"x\":" + m.Groups[2].Value + ",\"y\":" + m.Groups[3].Value + ",\"z\":" + m.Groups[4].Value + ",\"rot\":" + m.Groups[5].Value + ",\"var\":" + m.Groups[6].Value + "}";
+	}
 
 	private static string Num(double v)
 	{
@@ -94,7 +243,8 @@ internal static class FakeGame
 		bool ignoreLeave = Environment.GetEnvironmentVariable("FAKEGAME_IGNORE_LEAVE") == "1";
 		string inboxPath = Path.Combine("multiplayer", "runtime", "inbox_" + session + ".lua");
 		long lastId = 0;
-		Log("started");
+		SetMoney(StartMoney);
+		Log("started; money at " + balanceMem.ToString("x") + ", copy at " + displayMem.ToString("x") + ", statistic at " + statMem.ToString("x"));
 		EnterRoom("menu");
 		while (true)
 		{
@@ -141,12 +291,25 @@ internal static class FakeGame
 					{
 						Log("price " + kv.Key + "=" + Num(kv.Value));
 					}
+					Log("money=" + Num(Get(balanceMem)));
+				}
+				else if (cmd.StartsWith("money "))
+				{
+					SetMoney(double.Parse(cmd.Substring(6), CultureInfo.InvariantCulture));
+				}
+				else if (cmd.StartsWith("place ") || cmd.StartsWith("demolish "))
+				{
+					string[] parts = cmd.Split(' ');
+					double amount = double.Parse(parts[2], CultureInfo.InvariantCulture);
+					bool place = parts[0] == "place";
+					Transact(place ? -amount : amount);
+					Emit(parts[0], place ? PlaceInfo(parts[1]) : "{\"key\":\"" + parts[1] + "\"}");
 				}
 			}
 			if (saveIn >= 0 && saveIn-- == 0)
 			{
 				Directory.CreateDirectory("saves");
-				File.WriteAllBytes(Path.Combine("saves", "HostCity.cpcp"), new byte[2048]);
+				File.WriteAllBytes(Path.Combine("saves", "HostCity.cpcp"), SaveBytes(Get(balanceMem)));
 				Log("saved");
 			}
 			if (readyIn >= 0 && readyIn-- == 0)
@@ -158,9 +321,17 @@ internal static class FakeGame
 			{
 				Emit("hb", "{\"tick\":" + tick + ",\"paused\":false}");
 			}
+			// The HUD redraws even while paused.
+			Set(displayMem, Get(balanceMem));
 			if (paused)
 			{
 				continue;
+			}
+			if (markUndoAt >= 0 && tick >= markUndoAt)
+			{
+				markUndoAt = -1;
+				Transact(-markAmount);
+				Emit("moneymark", "{\"mark\":" + markId + ",\"step\":2}");
 			}
 			string text;
 			try
@@ -195,6 +366,11 @@ internal static class FakeGame
 				{
 					Match p = Regex.Match(m.Groups[3].Value, "\\[\"path\"\\]=\"([^\"]+)\"");
 					Log("loading " + p.Groups[1].Value + (File.Exists(p.Groups[1].Value) ? " (exists)" : " (MISSING)"));
+					double? saved = File.Exists(p.Groups[1].Value) ? SaveBalance(p.Groups[1].Value) : null;
+					if (saved != null)
+					{
+						SetMoney(saved.Value);
+					}
 					EnterRoom("level");
 				}
 				else if (type == "settings?")
@@ -238,6 +414,25 @@ internal static class FakeGame
 					{
 						protect.Remove(key);
 					}
+				}
+				else if (type == "moneymark")
+				{
+					if (markUndoAt >= 0)
+					{
+						Transact(-markAmount);
+					}
+					markId = (long)Field(m.Groups[3].Value, "mark");
+					markAmount = Field(m.Groups[3].Value, "amount");
+					Transact(markAmount);
+					markUndoAt = tick + 5;
+					Emit("moneymark", "{\"mark\":" + markId + ",\"step\":1}");
+				}
+				else if (type == "spend")
+				{
+					double spent = Field(m.Groups[3].Value, "spent");
+					double refunded = Field(m.Groups[3].Value, "refunded");
+					Transact(refunded - spent);
+					Log("spend spent=" + Num(spent) + " refunded=" + Num(refunded));
 				}
 				else if (type == "leave")
 				{

@@ -35,6 +35,8 @@ function New-GameDir([string]$name) {
     Set-Content (Join-Path $dir "assets\scripts\entities\3d\MainMenu.lua") "function create(menu)`r`n    setName(menu, `"Menu`")`r`nend"
     Set-Content (Join-Path $dir "assets\scripts\entities\simulation\GlobalStorage.lua") "function create(entity)`r`n    setName(entity, `"Global Storage Entity`")`r`nend"
     Set-Content (Join-Path $dir "assets\scripts\entities\simulation\_catalogue.lua") "-- catalogue"
+    # A template for the helper's price table: builds cost 50, demolishing gives 25 back.
+    Set-Content (Join-Path $dir "assets\scripts\entities\simulation\TestFlag.lua") "PlaceableTemplateInfo {`r`n    buildPrice = 50,`r`n}"
     Copy-Item $fakeExe $dir
     Set-Content (Join-Path $dir "stdin.txt") ""
     return $dir
@@ -423,10 +425,107 @@ function Scenario-PriceStaleAtClient {
     Write-Host "    ok: the client game kept its own later edit"
 }
 
+$F1 = "TestFlag@10,8,20/0/0"
+$F2 = "TestFlag@12,8,20/0/0"
+
+# Both helpers have found their game's money (scan + marker + nudge, see src/MoneySync.cs).
+function Start-MoneyPair([int]$port) {
+    $s = Start-HostAndClient $port
+    Expect "host finds its game's money" { HelperLog $s.h } "Shared money: on" 1 40
+    Expect "client finds its game's money" { HelperLog $s.c } "Shared money: on" 1 40
+    return $s
+}
+
+# Polls the fake game's "dump" until its newest money line shows $value.
+function Expect-Money([string]$what, [string]$dir, [string]$value, [int]$timeout = 12) {
+    $deadline = (Get-Date).AddSeconds($timeout)
+    $last = "(none)"
+    while ((Get-Date) -lt $deadline) {
+        Game $dir "dump"
+        Start-Sleep -Milliseconds 400
+        $m = [regex]::Matches((GameLog $dir), "money=([-0-9.E+]+)")
+        if ($m.Count -gt 0) { $last = $m[$m.Count - 1].Groups[1].Value }
+        if ($last -eq $value) { Write-Host "    ok: $what"; return }
+    }
+    throw "timed out waiting for: $what (money $value, last $last)"
+}
+
+function Expect-BothMoney($s, [string]$value) {
+    Expect-Money "host game has $value" $s.h $value
+    Expect-Money "client game has $value" $s.c $value
+}
+
+function Scenario-MoneyFound {
+    # The markers (+500, then -500) leave the money as it was, and the client shows the host's.
+    $s = Start-MoneyPair (Next-Port)
+    Expect-BothMoney $s "60000.25"
+}
+
+function Scenario-MoneyHostToClient {
+    $s = Start-MoneyPair (Next-Port)
+    Game $s.h "money 12345.5"
+    Expect-Money "client game follows the host's money" $s.c "12345.5"
+}
+
+function Scenario-MoneyClientIncomeIgnored {
+    # The client's own simulation earned something: the host's balance wins.
+    $s = Start-MoneyPair (Next-Port)
+    Game $s.c "money 99999"
+    Expect-Money "client game goes back to the host's money" $s.c "60000.25"
+}
+
+function Scenario-MoneyClientBuilds {
+    $s = Start-MoneyPair (Next-Port)
+    Game $s.c "place $F1 50"
+    Expect "host game is charged for the client's build" { GameLog $s.h } "spend spent=50 refunded=0"
+    Expect-BothMoney $s "59950.25"
+}
+
+function Scenario-MoneyBothBuild {
+    # Both build at the same moment: both costs come off the one wallet.
+    $s = Start-MoneyPair (Next-Port)
+    Game $s.h "place $F2 50"
+    Game $s.c "place $F1 50"
+    Expect-BothMoney $s "59900.25"
+}
+
+function Scenario-MoneyRefund {
+    $s = Start-MoneyPair (Next-Port)
+    Game $s.c "place $F1 50"
+    Expect-BothMoney $s "59950.25"
+    Game $s.c "demolish $F1 25"
+    Expect "host game gets the refund" { GameLog $s.h } "spend spent=0 refunded=25"
+    Expect-BothMoney $s "59975.25"
+}
+
+function Scenario-MoneyUnpricedBuild {
+    # No template file for "Mystery": the client is charged what its own game spent, like land plots.
+    $s = Start-MoneyPair (Next-Port)
+    Game $s.c "place Mystery@10,8,20/0/0 75"
+    Expect "host game is charged what the client's game spent" { GameLog $s.h } "spend spent=75 refunded=0"
+    Expect-BothMoney $s "59925.25"
+}
+
+function Scenario-MoneyHostPaused {
+    # The host's game is paused, so the client's spend waits there. The client already shows the
+    # cost taken off, and keeps showing it once the host applies it.
+    $s = Start-MoneyPair (Next-Port)
+    Game $s.h "pause"
+    Game $s.c "place $F1 50"
+    Expect-Money "client shows the cost before the host applies it" $s.c "59950.25"
+    Start-Sleep -Seconds 3
+    Expect-Money "client still shows it while the host is paused" $s.c "59950.25"
+    Game $s.h "resume"
+    Expect "host game is charged after resuming" { GameLog $s.h } "spend spent=50 refunded=0"
+    Expect-BothMoney $s "59950.25"
+}
+
 $scenarios = @("HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
     "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
     "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
-    "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient")
+    "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
+    "MoneyFound", "MoneyHostToClient", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
+    "MoneyUnpricedBuild", "MoneyHostPaused")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }
