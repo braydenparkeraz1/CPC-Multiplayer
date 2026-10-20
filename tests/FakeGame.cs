@@ -502,6 +502,34 @@ internal static class FakeGame
 		}
 	}
 
+	// The command in control.txt, or null. run.ps1 may still be writing the file (it is then locked,
+	// or still empty); it is read on a later tick.
+	private static string TakeControl()
+	{
+		try
+		{
+			if (!File.Exists("control.txt"))
+			{
+				return null;
+			}
+			string cmd = File.ReadAllText("control.txt").Trim();
+			if (cmd.Length == 0)
+			{
+				return null;
+			}
+			File.Delete("control.txt");
+			return cmd;
+		}
+		catch (IOException)
+		{
+			return null;
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return null;
+		}
+	}
+
 	private static int Main(string[] args)
 	{
 		for (int i = 0; i + 1 < args.Length; i++)
@@ -521,10 +549,9 @@ internal static class FakeGame
 		{
 			Thread.Sleep(100);
 			tick++;
-			if (File.Exists("control.txt"))
+			string cmd = TakeControl();
+			if (cmd != null)
 			{
-				string cmd = File.ReadAllText("control.txt").Trim();
-				File.Delete("control.txt");
 				Log("control " + cmd);
 				if (cmd == "exit")
 				{
