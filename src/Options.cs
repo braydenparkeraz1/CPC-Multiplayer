@@ -26,18 +26,18 @@ internal class Options
 		Options options = new Options();
 		for (int i = 0; i < args.Length; i++)
 		{
-			string text = args[i];
-			string text2 = ((i + 1 < args.Length) ? args[i + 1] : null);
-			switch (text.ToLowerInvariant())
+			string arg = args[i];
+			string next = i + 1 < args.Length ? args[i + 1] : null;
+			switch (arg.ToLowerInvariant())
 			{
 			case "host":
 				options.Mode = "host";
 				break;
 			case "join":
 				options.Mode = "join";
-				if (text2 != null && !text2.StartsWith("-"))
+				if (next != null && !next.StartsWith("-"))
 				{
-					options.Address = text2;
+					options.Address = next;
 					i++;
 				}
 				break;
@@ -51,34 +51,34 @@ internal class Options
 				options.Mode = "lobby";
 				break;
 			case "--control":
-				options.ControlFile = text2;
+				options.ControlFile = next;
 				i++;
 				break;
 			case "--port":
-				options.Port = int.Parse(text2);
+				options.Port = int.Parse(next);
 				i++;
 				break;
 			case "--name":
-				options.Name = text2;
+				options.Name = next;
 				i++;
 				break;
 			case "--game":
-				options.GameDir = text2;
+				options.GameDir = next;
 				i++;
 				break;
 			case "--autosave":
-				options.AutosaveSeconds = int.Parse(text2);
+				options.AutosaveSeconds = int.Parse(next);
 				i++;
 				break;
 			case "--city":
-				options.City = text2;
+				options.City = next;
 				i++;
 				break;
 			case "--allow-second-instance":
 				options.AllowSecondInstance = true;
 				break;
 			default:
-				Ui.Warn("Ignoring unknown argument: " + text);
+				Ui.Warn("Ignoring unknown argument: " + arg);
 				break;
 			}
 		}

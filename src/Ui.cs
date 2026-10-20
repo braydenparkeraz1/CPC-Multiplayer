@@ -27,7 +27,7 @@ internal sealed class ConsoleSink : IUiSink
 {
 	public void Write(UiKind kind, string text)
 	{
-		ConsoleColor foregroundColor = Console.ForegroundColor;
+		ConsoleColor before = Console.ForegroundColor;
 		Console.ForegroundColor = kind switch
 		{
 			UiKind.Good => ConsoleColor.Green,
@@ -38,7 +38,7 @@ internal sealed class ConsoleSink : IUiSink
 			_ => ConsoleColor.Gray,
 		};
 		Console.WriteLine((kind == UiKind.Step) ? (">> " + text) : text);
-		Console.ForegroundColor = foregroundColor;
+		Console.ForegroundColor = before;
 	}
 
 	public string Command(string command)
@@ -59,12 +59,12 @@ internal static class Ui
 	{
 		lock (consoleLock)
 		{
-			ConsoleColor foregroundColor = Console.ForegroundColor;
+			ConsoleColor before = Console.ForegroundColor;
 			Console.ForegroundColor = ConsoleColor.Cyan;
 			Console.WriteLine("=== Car Park Capital Multiplayer " + Program.Version + " ===");
 			Console.ForegroundColor = ConsoleColor.DarkGray;
 			Console.WriteLine("Co-op building mod. Keep this window open while you play.");
-			Console.ForegroundColor = foregroundColor;
+			Console.ForegroundColor = before;
 			Console.WriteLine();
 		}
 	}
@@ -149,15 +149,15 @@ internal static class Ui
 			{
 				Console.Write((defaultValue != null) ? $"{question} [{defaultValue}]: " : (question + ": "));
 			}
-			string text = Console.ReadLine();
-			if (text == null)
+			string answer = Console.ReadLine();
+			if (answer == null)
 			{
 				return defaultValue;
 			}
-			text = text.Trim();
-			if (text.Length > 0)
+			answer = answer.Trim();
+			if (answer.Length > 0)
 			{
-				return text;
+				return answer;
 			}
 		}
 		while (defaultValue == null);
@@ -171,8 +171,7 @@ internal static class Ui
 		Info("  [3] Uninstall the mod");
 		while (true)
 		{
-			string text = Ask("Choose 1, 2 or 3", null);
-			switch (text)
+			switch (Ask("Choose 1, 2 or 3", null))
 			{
 			case "1":
 				return "host";

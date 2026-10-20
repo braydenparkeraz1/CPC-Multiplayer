@@ -89,16 +89,16 @@ function Game([string]$dir, [string]$cmd) {
     $file = Join-Path $dir "control.txt"
     Retry { Set-Content $file $cmd }
     $deadline = (Get-Date).AddSeconds(5)
-    while ((Test-Path $file) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
-    if (Test-Path $file) { throw "the fake game in $dir didn't take '$cmd'" }
+    while ([IO.File]::Exists($file) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    if ([IO.File]::Exists($file)) { throw "the fake game in $dir didn't take '$cmd'" }
 }
 
 function Helper([string]$dir, [string]$cmd) {
     $file = Join-Path $dir "helper-control.txt"
     Retry { Set-Content $file $cmd }
     $deadline = (Get-Date).AddSeconds(5)
-    while ((Test-Path $file) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
-    if (Test-Path $file) { throw "the helper in $dir didn't take '$cmd'" }
+    while ([IO.File]::Exists($file) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    if ([IO.File]::Exists($file)) { throw "the helper in $dir didn't take '$cmd'" }
 }
 
 function Stop-All {
@@ -303,8 +303,139 @@ function Scenario-LobbyHostGoneBeforeCity {
     Write-Host "    ok: client game stayed open"
 }
 
-$scenarios = @("HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
-    "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity")
+# ---- unit tests ----
+
+function Scenario-HelperUnits {
+    & (Join-Path $bin "tests\helpertests.exe") | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "helper unit tests failed" }
+}
+
+function Scenario-LuaSync {
+    & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\sync_test.lua") | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "Lua tests failed" }
+}
+
+# ---- 0.4.0 sync: the host decides, instant join, drift repair ----
+
+function Start-HostAndClient([hashtable]$hostEnv = @{}) {
+    $h = New-GameDir "host"; $c = New-GameDir "client"; $port = Next-Port
+    Start-Helper $h @("host", "--name", "Hosty", "--port", $port) $hostEnv | Out-Null
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    Game $h "level"
+    Expect "host city loaded" { HelperLog $h } "City loaded"
+    Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty") | Out-Null
+    Expect "client in host's city" { HelperLog $c } "You're in the host's city"
+    return @{ h = $h; c = $c; port = $port }
+}
+
+function Scenario-ClientBuildAccepted {
+    $s = Start-HostAndClient
+    Game $s.c "build Bench@4,1,4/0/0"
+    Expect "host's game places it as a friend's build" { GameLog $s.h } "place Bench@4,1,4/0/0 \(proposal\)"
+    Expect "host confirms it to the client" { HelperLog $s.c } "the host placed our Bench@4,1,4/0/0"
+    Game $s.h "build Lamp@5,1,5/0/0"
+    Expect "host's build reaches the client" { GameLog $s.c } "place Lamp@5,1,5/0/0\r?\n"
+}
+
+function Scenario-ClientBuildRejected {
+    $s = Start-HostAndClient @{ FAKEGAME_BLOCK = "Bench@4,1,4/0/0" }
+    Game $s.c "build Bench@4,1,4/0/0"
+    Expect "host takes it back" { HelperLog $s.h } "Clienty's Bench didn't fit in your city"
+    Expect "client is told" { HelperLog $s.c } "Your Bench overlapped something in the host's city"
+    Expect "client's game takes it out" { GameLog $s.c } "undo Bench@4,1,4/0/0"
+}
+
+function Scenario-ThreePlayers {
+    $s = Start-HostAndClient @{ FAKEGAME_BLOCK = "Tree@6,1,6/0/0" }
+    $c2 = New-GameDir "client2"
+    Start-Helper $c2 @("join", "127.0.0.1:$($s.port)", "--name", "Second") | Out-Null
+    Expect "second client in host's city" { HelperLog $c2 } "You're in the host's city"
+    Game $s.c "build Bench@4,1,4/0/0"
+    Expect "a client's build reaches the other client" { GameLog $c2 } "place Bench@4,1,4/0/0\r?\n"
+    Game $s.c "build Tree@6,1,6/0/0"
+    Expect "the other client gets it too" { GameLog $c2 } "place Tree@6,1,6/0/0\r?\n"
+    Expect "and takes it out when the host can't place it" { GameLog $c2 } "undo Tree@6,1,6/0/0"
+    Expect "so does the builder" { GameLog $s.c } "undo Tree@6,1,6/0/0"
+}
+
+function Scenario-InstantJoinLobbyCity {
+    # The host opens a city and builds before hosting; a friend joins without anyone saving by hand,
+    # and still gets the build made after the city's last save.
+    $port = Next-Port
+    $s = Start-LobbyPair $port
+    Game $s.h "level"
+    Expect "city open in the lobby" { HelperLog $s.h } "city ready in the lobby"
+    Expect "the game saved it" { GameLog $s.h } "saved"
+    Game $s.h "build Sign@7,1,7/0/0"
+    Expect "host sees its build" { HelperLog $s.h } '"t":"place".*Sign@7,1,7/0/0'
+    Helper $s.h "host"
+    Expect "host shares the open city" { HelperLog $s.h } "Sharing the city you have open"
+    Join-Lobby $s $port
+    Expect "city sent with the newer build" { HelperLog $s.h } "\+ 1 newer builds"
+    Expect "client's game gets the build" { GameLog $s.c } "place Sign@7,1,7/0/0"
+    if ((HelperLog $s.h) -match "needs your city") { throw "the host was asked to save" }
+    Write-Host "    ok: nobody had to save"
+}
+
+function Scenario-DriftRepair {
+    # Each side gets an object the other never heard of; the client's city is made to match the host's.
+    $s = Start-HostAndClient
+    Game $s.c "sneak Junk@9,9,9/0/0"
+    Game $s.h "sneak Extra@8,8,8/0/0"
+    Expect "client takes out what the host doesn't have" { GameLog $s.c } "reconcile \d+: placed \d+ removed 1" 1 45
+    Expect "client adds what the host has" { GameLog $s.c } "reconcile \d+: placed 1" 1 45
+    Expect "client is told" { HelperLog $s.c } "Fixed 1 object that didn't match the host's city" 1 10
+}
+
+function Scenario-VersionRefused {
+    $h = New-GameDir "host"; $port = Next-Port
+    Start-Helper $h @("host", "--name", "Hosty", "--port", $port) | Out-Null
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    $tcp = New-Object Net.Sockets.TcpClient("127.0.0.1", $port)
+    try {
+        $stream = $tcp.GetStream()
+        $stream.ReadTimeout = 10000
+        $writer = New-Object IO.StreamWriter($stream)
+        $writer.AutoFlush = $true
+        $writer.WriteLine('{"t":"hello","name":"Oldie","version":"0.3.0"}')
+        $line = (New-Object IO.StreamReader($stream)).ReadLine()
+    } finally {
+        $tcp.Close()
+    }
+    if ($line -notmatch '"t":"refused"') { throw "expected a refusal, got: $line" }
+    Write-Host "    ok: an older helper is refused"
+    Expect "host says why" { HelperLog $h } "Oldie tried to join with mod version 0\.3\.0"
+}
+
+function Scenario-OldHostRefused {
+    # A stand-in 0.3.0 host: it welcomes anyone. The client must refuse it itself.
+    $c = New-GameDir "client"; $port = Next-Port
+    $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $port)
+    $listener.Start()
+    try {
+        $cp = Start-Helper $c @("lobby", "--name", "Clienty")
+        Expect "client game in lobby" { GameLog $c } "hello role=lobby"
+        Helper $c "join 127.0.0.1:$port"
+        $tcp = $listener.AcceptTcpClient()
+        $stream = $tcp.GetStream()
+        $stream.ReadTimeout = 10000
+        $hello = (New-Object IO.StreamReader($stream)).ReadLine()
+        if ($hello -notmatch '"t":"hello"') { throw "expected hello, got: $hello" }
+        $writer = New-Object IO.StreamWriter($stream)
+        $writer.AutoFlush = $true
+        $writer.WriteLine('{"t":"welcome","host":"Oldhost","version":"0.3.0"}')
+        Expect "client refuses the old host" { HelperLog $c } "The host has mod version 0\.3\.0, you have"
+        Expect "client back in the lobby" { HelperLog $c } "Back in the lobby"
+        $tcp.Close()
+    } finally {
+        $listener.Stop()
+    }
+}
+
+$scenarios = @("HelperUnits", "LuaSync",
+    "HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
+    "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
+    "ClientBuildAccepted", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }

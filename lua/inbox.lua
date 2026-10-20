@@ -95,6 +95,25 @@ MP.handlers.hello = function(msg)
         if not ok then autosaveErr = tostring(err) end
     end
     local okRead, interval = pcall(function() return gameSettings.autoSaveInterval end)
+    local okFind, saveApi = pcall(MP.findFunctions, "[Ss]ave")
     MP.emit("hello", { role = MP.role, context = MP.context, version = MP.VERSION,
-        autosave = okRead and interval or nil, autosaveErr = autosaveErr })
+        autosave = okRead and interval or nil, autosaveErr = autosaveErr, saveApi = okFind and saveApi or nil })
+end
+
+-- Names of the game's Lua functions matching a pattern (logged by the helper; a way to find
+-- API calls we might use, like saving the city).
+function MP.findFunctions(pattern)
+    local names, seen = {}, {}
+    local t = MP.env
+    for _ = 1, 6 do
+        if type(t) ~= "table" or seen[t] then break end
+        seen[t] = true
+        for k, v in pairs(t) do
+            if type(k) == "string" and type(v) == "function" and k:find(pattern) then names[#names + 1] = k end
+        end
+        local mt = getmetatable(t)
+        t = mt and type(mt.__index) == "table" and mt.__index or nil
+    end
+    table.sort(names)
+    return names
 end

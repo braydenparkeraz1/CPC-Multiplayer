@@ -6,6 +6,7 @@ using System.Text;
 
 namespace CpcMultiplayer;
 
+// Writes values as Lua literals, for the inbox file the mod loads.
 internal static class Lua
 {
 	public static void Write(StringBuilder sb, object v)
@@ -48,10 +49,10 @@ internal static class Lua
 			}
 			sb.Append('"');
 		}
-		else if (v is IDictionary<string, object> dictionary)
+		else if (v is IDictionary<string, object> table)
 		{
 			sb.Append('{');
-			foreach (KeyValuePair<string, object> item in dictionary)
+			foreach (KeyValuePair<string, object> item in table)
 			{
 				sb.Append('[');
 				Write(sb, item.Key);
@@ -61,12 +62,12 @@ internal static class Lua
 			}
 			sb.Append('}');
 		}
-		else if (v is IEnumerable enumerable)
+		else if (v is IEnumerable list)
 		{
 			sb.Append('{');
-			foreach (object item2 in enumerable)
+			foreach (object item in list)
 			{
-				Write(sb, item2);
+				Write(sb, item);
 				sb.Append(',');
 			}
 			sb.Append('}');

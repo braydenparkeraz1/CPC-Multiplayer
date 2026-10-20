@@ -1,8 +1,20 @@
-# Testing the helper without the game
+# Testing without the game
 
-`FakeGame.cs` builds a stand-in `carparkcapital.exe` that does what the mod's Lua side does: it reads the inbox
-file, acks messages, prints `MP>` lines, "loads" a city on `loadworld` and exits on `leave`.
-It can't test anything inside the real game (object/tile sync, pausing), only the helper and the network protocol.
+`run.ps1` runs everything; build first with `build.ps1`. There are three kinds of tests:
+
+- **Helper unit tests** (`HelperTests.cs`, scenario `HelperUnits`): the helper's sync logic on its own: build events,
+  the host's change log, pending tile edits, drift decisions, area hashes and repairs of the tile map.
+- **Lua tests** (`lua/sync_test.lua` with the stand-in engine `lua/engine.lua`, scenario `LuaSync`): the mod's
+  `lua/hooks.lua` and `lua/sync.lua` running on Lua 5.4 (`LuaRunner.cs`, a minimal `lua.exe`) against a fake
+  entity/component world: reporting builds, replaying friends' builds, retries, undo, digests and repairs, and two
+  "PCs" racing for one tile. Run them alone with `.testrun\bin\luarun\luarun.exe tests\lua\sync_test.lua`.
+- **Scenarios** with the stand-in game: `FakeGame.cs` builds a `carparkcapital.exe` that does what the mod's Lua side
+  does at the helper's end: it reads the inbox file, acks messages, prints `MP>` lines, "loads" a city on `loadworld`,
+  exits on `leave`, keeps a set of object keys (confirming or blocking friends' builds, digest, dump, reconcile).
+  These test the helper and the network protocol between real helper processes.
+
+None of them can test what only the real game does: whether its placements, demolitions and memory layout behave as
+the stand-ins assume. Roads, floors and land can't be scenario-tested at all (the fake game has no tile map in memory).
 
 ## Automated run
 
@@ -35,10 +47,12 @@ CPC-Multiplayer.exe join 127.0.0.1:27877 --game <client> --name Clienty --allow-
 ```
 
 Drive a fake game by writing one command to `control.txt` in its folder:
-`level` (load a city and autosave it), `menu`, `save`, `exit`.
+`level` (load a city and autosave it), `menu`, `save`, `exit`, `build <key>` / `demolish <key>` (the player builds or
+demolishes), `sneak <key>` / `drop <key>` (an object appears or vanishes without being reported, to make the cities drift).
 Drive a helper the same way through the file given with `--control`: one command per line, as you'd type them
 (`host`, `join <addr>`, `leave`, `say <text>`, `status`, `quit`, ...).
-Set `FAKEGAME_IGNORE_LEAVE=1` for the client to check the helper force-closes a game that doesn't close.
+Set `FAKEGAME_IGNORE_LEAVE=1` for the client to check the helper force-closes a game that doesn't close, and
+`FAKEGAME_BLOCK=<key>` for a game where a friend's build of that key doesn't fit.
 Each fake game logs what it received to `fakegame.log`; the helpers log to `multiplayer/runtime/helper-*.log`.
 
 ## Scenarios checked for 0.3.0
@@ -67,3 +81,15 @@ Each starts both helpers with `lobby`, so the games start before anyone picks ho
 
 HostJoin (which includes the host going to the menu), HostQuit, HostKilled and IgnoreLeave cover the 0.3.0 table.
 The frozen-host case is not automated.
+
+## Scenarios added for 0.4.0 (sync)
+
+| Scenario (`run.ps1`) | Expected |
+|---|---|
+| ClientBuildAccepted | A client's build reaches the host's game as a proposal; the host confirms it (`ok`). A host build reaches the client |
+| ClientBuildRejected | The host's game can't place a client's build: the host takes it back, the client is told and its game gets `undo` |
+| ThreePlayers | A client's build reaches the other client straight away; when the host can't place it, both clients get `undo` |
+| InstantJoinLobbyCity | A host opens a city in the lobby and builds; after `host`, a client joins without anyone saving, and gets the build made after the save |
+| DriftRepair | The client has an object the host doesn't, and lacks one the host has: within a few digests the client's game reconciles both |
+| VersionRefused | A helper with another mod version gets `refused` |
+| OldHostRefused | A client that reaches a host with another mod version (which welcomes it) leaves and goes back to the lobby |

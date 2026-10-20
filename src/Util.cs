@@ -17,16 +17,12 @@ internal static class Util
 
 	public static string CleanName(string name)
 	{
-		string text = Regex.Replace(name ?? "", "[^A-Za-z0-9 _-]", "").Trim();
-		if (text.Length > 24)
+		string clean = Regex.Replace(name ?? "", "[^A-Za-z0-9 _-]", "").Trim();
+		if (clean.Length > 24)
 		{
-			text = text.Substring(0, 24);
+			clean = clean.Substring(0, 24);
 		}
-		if (text.Length != 0)
-		{
-			return text;
-		}
-		return "Player";
+		return clean.Length != 0 ? clean : "Player";
 	}
 
 	public static string NewId()
@@ -66,20 +62,21 @@ internal static class Util
 		{
 			return (long)value;
 		}
-		if (value is decimal num && num == Math.Floor(num))
+		if (value is decimal dec && dec == Math.Floor(dec))
 		{
-			return (long)num;
+			return (long)dec;
 		}
-		if (value is double num2 && num2 == Math.Floor(num2))
+		if (value is double dbl && dbl == Math.Floor(dbl))
 		{
-			return (long)num2;
+			return (long)dbl;
 		}
 		return null;
 	}
 
+	// Moves tmp over target, retrying for a while if the game has target open.
 	public static void ReplaceFile(string tmp, string target)
 	{
-		int num = 0;
+		int tries = 0;
 		while (true)
 		{
 			try
@@ -96,7 +93,7 @@ internal static class Util
 			}
 			catch (IOException)
 			{
-				if (num >= 40)
+				if (tries >= 40)
 				{
 					throw;
 				}
@@ -104,13 +101,13 @@ internal static class Util
 			}
 			catch (UnauthorizedAccessException)
 			{
-				if (num >= 40)
+				if (tries >= 40)
 				{
 					throw;
 				}
 				Thread.Sleep(15);
 			}
-			num++;
+			tries++;
 		}
 	}
 }
