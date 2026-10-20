@@ -1,3 +1,6 @@
+using System;
+using System.IO;
+
 namespace CpcMultiplayer;
 
 internal class Options
@@ -26,6 +29,12 @@ internal class Options
 
 	// A client sends its playtest log to the host (--no-share-log turns it off).
 	public bool ShareLog = true;
+
+	// Keep the console window even when the helper was started on its own (by a double-click or Steam).
+	public bool ShowConsole;
+
+	// The menu's Host and Join buttons use the clipboard (--no-clipboard, for tests on a PC someone uses).
+	public bool UseClipboard = true;
 
 	public static Options Parse(string[] args)
 	{
@@ -89,7 +98,20 @@ internal class Options
 			case "--no-share-log":
 				options.ShareLog = false;
 				break;
+			case "--console":
+				options.ShowConsole = true;
+				break;
+			case "--no-clipboard":
+				options.UseClipboard = false;
+				break;
 			default:
+				if (arg.EndsWith("carparkcapital.exe", StringComparison.OrdinalIgnoreCase))
+				{
+					// Steam's launch options as '"<this exe>" %command%': the rest is the game's own command
+					// line. The helper starts the game itself.
+					options.GameDir ??= Path.GetDirectoryName(Path.GetFullPath(arg));
+					return options;
+				}
 				Ui.Warn("Ignoring unknown argument: " + arg);
 				break;
 			}

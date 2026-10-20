@@ -64,10 +64,7 @@ internal partial class Session
 			return false;
 		}
 		Ui.Good("Hosting on port " + opts.Port + ".");
-		IEnumerable<IPAddress> addresses = from a in Dns.GetHostAddresses(Dns.GetHostName())
-			where a.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a)
-			select a;
-		Ui.Info("Friends join with one of: " + string.Join(", ", addresses.Select(a => a + ":" + opts.Port)));
+		Ui.Info("Friends join with one of: " + string.Join(", ", Invite.LocalAddresses().Select(a => a + ":" + opts.Port)));
 		Ui.Info("(Over the internet they need your public IP with port " + opts.Port + " forwarded, or a VPN like Tailscale/ZeroTier/Radmin.)");
 		StartBackground(AcceptLoop);
 		return true;

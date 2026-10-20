@@ -69,6 +69,11 @@ MP.onTick = nil
 loadModule("util", MP)
 loadModule("inbox", MP)
 
+if context == "menu" then
+    -- Host/Join buttons, so nobody has to type in the helper's window.
+    loadModule("menu", MP)
+end
+
 if context == "level" then
     -- The level's shared environment is the first table up the __index chain that holds setComponents.
     local roomEnv = env

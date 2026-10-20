@@ -55,7 +55,7 @@ internal partial class Session
 	private bool InHostCity => gameContext == "level" && roomSeq == hostCityRoom;
 
 	// Lobby: join a host. On failure we stay in the lobby.
-	private void BeginJoin(string address)
+	private void BeginJoin(string address, TimeSpan? timeout = null)
 	{
 		if (role != Role.Lobby)
 		{
@@ -73,7 +73,7 @@ internal partial class Session
 		{
 			DeleteWorldSaves();
 		}
-		if (!Connect())
+		if (!Connect(timeout))
 		{
 			return;
 		}
@@ -114,7 +114,7 @@ internal partial class Session
 		}
 	}
 
-	private bool Connect()
+	private bool Connect(TimeSpan? timeout = null)
 	{
 		string address = (opts.Address ?? "").Trim();
 		int port = opts.Port;
@@ -139,7 +139,7 @@ internal partial class Session
 		{
 			client = new TcpClient();
 			IAsyncResult connecting = client.BeginConnect(address, port, null, null);
-			if (!connecting.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(10.0)) || !client.Connected)
+			if (!connecting.AsyncWaitHandle.WaitOne(timeout ?? TimeSpan.FromSeconds(10.0)) || !client.Connected)
 			{
 				throw new SocketException(10060);
 			}
@@ -197,7 +197,8 @@ internal partial class Session
 				host.Close();
 				break;
 			}
-			Ui.Good("Connected to " + Util.CleanName(Util.Str(m, "host")) + "'s game.");
+			hostPlayerName = Util.CleanName(Util.Str(m, "host"));
+			Ui.Good("Connected to " + hostPlayerName + "'s game.");
 			settings.RememberHost(opts.Address);
 			settings.Save();
 			break;

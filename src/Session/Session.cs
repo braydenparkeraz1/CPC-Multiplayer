@@ -119,6 +119,10 @@ internal partial class Session
 			Ui.Warn("Car Park Capital is already running. Close the game first; this window starts it for you.");
 			while (Process.GetProcessesByName("carparkcapital").Length > 0)
 			{
+				if (ConsoleWindow.Hidden && !ConsoleWindow.AskRetry("Car Park Capital is already running. Close the game, then press Retry: CPC Multiplayer starts it for you."))
+				{
+					return 0;
+				}
 				Thread.Sleep(500);
 			}
 		}
@@ -143,6 +147,7 @@ internal partial class Session
 			QueueCityLoad();
 		}
 		inbox.Flush();
+		ShowErrorsOnMenu();
 		game.Line += line => Post(() => OnGameLine(line));
 		game.Exited += () => Post(OnGameExited);
 		Ui.Step("Starting Car Park Capital...");
@@ -182,10 +187,15 @@ internal partial class Session
 		if (game.Uptime < TimeSpan.FromSeconds(15.0))
 		{
 			Ui.Warn("The game closed right after starting. Make sure Steam is running and signed in.");
+			if (ConsoleWindow.Hidden)
+			{
+				ConsoleWindow.Message("The game closed right after starting. Make sure Steam is running and signed in.", error: true);
+				return 0;
+			}
 			Ui.Info("Press Enter to close.");
 			exitSignal.WaitOne();
 		}
-		else
+		else if (!ConsoleWindow.Hidden)
 		{
 			Ui.Info("Bye! This window closes in a few seconds.");
 			exitSignal.WaitOne(TimeSpan.FromSeconds(4.0));
@@ -232,6 +242,7 @@ internal partial class Session
 		}
 		TileTick();
 		DriftTick();
+		UpdateMenu();
 		UpdatePauseHint();
 		SnapshotTick();
 		ShareLogTick();

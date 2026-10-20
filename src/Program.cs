@@ -40,6 +40,11 @@ internal static class Program
 	private static int Run(string[] args)
 	{
 		Options options = Options.Parse(args);
+		if ((options.Mode == null || options.Mode == "lobby") && !options.ShowConsole && !options.Dev)
+		{
+			// Started on its own (double-click, Steam): the game's main menu has the buttons now.
+			ConsoleWindow.HideIfOwn();
+		}
 		string gameDir = GameInstall.Find(options.GameDir);
 		if (gameDir == null)
 		{
@@ -62,6 +67,10 @@ internal static class Program
 		if (PlayLog.FilePath != null)
 		{
 			Ui.Info("Playtest log: " + PlayLog.FilePath);
+		}
+		if (ConsoleWindow.Hidden)
+		{
+			PlayLog.Write("state", "console window hidden (started on its own; --console keeps it)");
 		}
 		if (options.Mode == "uninstall")
 		{

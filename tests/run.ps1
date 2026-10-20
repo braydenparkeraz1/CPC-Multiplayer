@@ -315,6 +315,40 @@ function Scenario-LobbyHostGoneBeforeCity {
     Write-Host "    ok: client game stayed open"
 }
 
+# ---- the main menu's buttons (lua/menu.lua) instead of typing in the helper's window ----
+
+function Scenario-MenuButtons {
+    # --no-clipboard keeps the tests off this PC's clipboard, so Join falls back to the last host.
+    $port = Next-Port
+    $h = New-GameDir "host"; $c = New-GameDir "client"
+    New-Item -ItemType Directory -Force (Join-Path $c "multiplayer") | Out-Null
+    Set-Content (Join-Path $c "multiplayer\settings.json") "{`"name`":`"Clienty`",`"recentHosts`":[`"127.0.0.1:$port`"]}"
+    Start-Helper $h @("lobby", "--name", "Hosty", "--port", $port, "--no-clipboard") | Out-Null
+    Start-Helper $c @("lobby", "--port", $port, "--no-clipboard") | Out-Null
+    Expect "host menu offers Host and Join" { GameLog $h } "menu \[host,join\] Multiplayer - playing as Hosty \| To join, copy the host address"
+    Expect "client menu names its last host" { GameLog $c } "menu \[host,join\] Multiplayer - playing as Clienty \| Join uses a copied address, or 127\.0\.0\.1:$port"
+    Game $h "click join"
+    Expect "Join without an address explains" { GameLog $h } "menu \[host,join\] .* \| Copy the host address first"
+    Game $h "click host"
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    Expect "host menu shows the invite and Stop" { GameLog $h } "menu \[leave\] Hosting - load a city to share it \| Friends join with"
+    Game $c "click join"
+    Expect "client joined its last host" { GameLog $c } "menu \[leave\] Joined Hosty \| Waiting for the host to open a city"
+    Expect "host menu counts the friend" { GameLog $h } "menu \[leave\] Hosting for 1 friend - load a city"
+    Game $h "level"
+    Expect "client in host's city" { HelperLog $c } "You're in the host's city" 1 30
+    Game $h "menu"
+    Expect "host back at the menu, still hosting" { GameLog $h } "menu \[leave\] Hosting" 3
+    Game $h "click leave"
+    Expect "Stop ends hosting" { HelperLog $h } "You stopped hosting"
+    Expect "host menu offers Host and Join again" { GameLog $h } "menu \[host,join\]" 3
+}
+
+function Scenario-LuaMenu {
+    & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\menu_test.lua") | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "Lua menu tests failed" }
+}
+
 # ---- unit tests ----
 
 function Scenario-HelperUnits {
@@ -711,6 +745,7 @@ function Scenario-MoneyHostPaused {
 $scenarios = @("HelperUnits", "LuaSync",
     "HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
     "NoModeIsLobby", "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
+    "MenuButtons", "LuaMenu",
     "ClientBuildAccepted", "PlaytestLog", "NoShareLog", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused",
     "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",

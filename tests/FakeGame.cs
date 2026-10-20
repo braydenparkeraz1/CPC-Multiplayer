@@ -17,12 +17,14 @@
 //   pause / resume        stop / start reading the inbox, like the real game while paused
 //   dump                  log every price as "price <key>=<value>", and "money=<value>"
 //   money <value>         set the city's money (income or upkeep of our own simulation)
+//   click <id>            the player clicked a button on the main menu (lua/menu.lua), e.g. "click host"
 // The money lives in native memory like the game's, so the helper has to find it by scanning this
 // process (inbox "moneymark") and reads or writes it there. Inbox "spend" charges it.
 // Environment: FAKEGAME_IGNORE_LEAVE=1 ignores "leave" (tests the helper's force-close);
 // FAKEGAME_BLOCK=<key> makes a friend's build of that key not fit (reported "blocked").
 // fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "place Bench@1,1,1/0/0",
-// "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37", "stale ParkingEntrance@1,8,1/0/0=0.2".
+// "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37", "stale ParkingEntrance@1,8,1/0/0=0.2",
+// "menu [host,join] <line> | <line>" (what the main menu shows).
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -341,6 +343,9 @@ internal static class FakeGame
 		case "money":
 			SetMoney(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
+		case "click":
+			Emit("menu", "{\"click\":" + Json(arg) + "}");
+			break;
 		case "sneak":
 			objects.Add(arg);
 			break;
@@ -468,6 +473,15 @@ internal static class FakeGame
 			}
 			Log($"reconcile {bucket}: placed {missing.Count} removed {extra.Count}");
 			Emit("reconciled", "{\"bucket\":" + bucket + ",\"placed\":" + missing.Count + ",\"removed\":" + extra.Count + "}");
+			break;
+		}
+		case "menu":
+		{
+			// {["lines"]={"...","...",},["buttons"]={{["id"]="host",["label"]="Host",},},}
+			Match lines = Regex.Match(rest, @"\[""lines""\]=\{((?:""(?:[^""\\]|\\.)*"",)*)\}");
+			IEnumerable<string> texts = Regex.Matches(lines.Groups[1].Value, @"""((?:[^""\\]|\\.)*)""").Cast<Match>().Select(t => t.Groups[1].Value);
+			IEnumerable<string> ids = Regex.Matches(rest, @"\[""id""\]=""([^""]*)""").Cast<Match>().Select(t => t.Groups[1].Value);
+			Log("menu [" + string.Join(",", ids.ToArray()) + "] " + string.Join(" | ", texts.ToArray()));
 			break;
 		}
 		default:

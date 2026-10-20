@@ -55,6 +55,12 @@ internal static class Ui
 
 	public static IUiSink Sink = new ConsoleSink();
 
+	// Also told every status line, from whichever thread wrote it (the session shows errors on the game's menu).
+	public static Action<UiKind, string> Listener;
+
+	// For a message box when the console is hidden and something would wait for Enter.
+	private static string lastError;
+
 	public static void Banner()
 	{
 		lock (consoleLock)
@@ -110,6 +116,11 @@ internal static class Ui
 			}
 		}
 		PlayLog.Write(kind.ToString().ToLowerInvariant(), text);
+		if (kind == UiKind.Error)
+		{
+			lastError = text;
+		}
+		Listener?.Invoke(kind, text);
 	}
 
 	public static string Command(string command)
@@ -173,6 +184,14 @@ internal static class Ui
 
 	public static void PressEnter()
 	{
+		if (ConsoleWindow.Hidden)
+		{
+			if (lastError != null)
+			{
+				ConsoleWindow.Message(lastError, error: true);
+			}
+			return;
+		}
 		Info("Press Enter to close.");
 		Console.ReadLine();
 	}

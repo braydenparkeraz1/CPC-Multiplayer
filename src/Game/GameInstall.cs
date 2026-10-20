@@ -37,7 +37,7 @@ internal static class GameInstall
 	// MPPaint0..13, one per floor material.
 	private const int PainterCount = 14;
 
-	private static readonly string[] LuaModules = { "boot", "util", "inbox", "hooks", "sync", "settings", "money" };
+	private static readonly string[] LuaModules = { "boot", "util", "inbox", "hooks", "sync", "settings", "money", "menu" };
 
 	private static readonly Patch[] Patches =
 	{

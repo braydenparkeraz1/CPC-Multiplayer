@@ -8,6 +8,8 @@
   `lua/hooks.lua` and `lua/sync.lua` running on Lua 5.4 (`LuaRunner.cs`, a minimal `lua.exe`) against a fake
   entity/component world: reporting builds, replaying friends' builds, retries, undo, digests and repairs, and two
   "PCs" racing for one tile. Run them alone with `.testrun\bin\luarun\luarun.exe tests\lua\sync_test.lua`.
+  `lua/menu_test.lua` (scenario `LuaMenu`) does the same for `lua/menu.lua`, the main menu's buttons, with its own small
+  stand-in for the engine: letters and shadows, clicks and hovering by cursor position, a menu sent before the camera exists.
 - **Scenarios** with the stand-in game: `FakeGame.cs` builds a `carparkcapital.exe` that does what the mod's Lua side
   does at the helper's end: it reads the inbox file, acks messages, prints `MP>` lines, "loads" a city on `loadworld`,
   exits on `leave`, keeps a set of object keys (confirming or blocking friends' builds, digest, dump, reconcile).
@@ -49,7 +51,8 @@ CPC-Multiplayer.exe join 127.0.0.1:27877 --game <client> --name Clienty --allow-
 Drive a fake game by writing one command to `control.txt` in its folder:
 `level` (load a city and autosave it), `menu`, `save`, `exit`, `build <key> [cost]` / `demolish <key> [refund]` (the player
 builds or demolishes), `sneak <key>` / `drop <key>` (an object appears or vanishes without being reported, to make the cities
-drift), and the price and money commands below.
+drift), `click <id>` (the player clicked a main menu button: `host`, `join`, `leave`), and the price and money commands
+below. The fake game logs what the main menu shows as `menu [<button ids>] <line> | <line>`.
 Drive a helper the same way through the file given with `--control`: one command per line, as you'd type them
 (`host`, `join <addr>`, `leave`, `say <text>`, `status`, `quit`, ...).
 Set `FAKEGAME_IGNORE_LEAVE=1` for the client to check the helper force-closes a game that doesn't close, and
@@ -80,6 +83,8 @@ Each starts both helpers with `lobby`, so the games start before anyone picks ho
 | LobbyClientLeaves | Client `leave`: the host sees it go, the client game restarts in the lobby, and the client can join again |
 | LobbyHostQuits | Host `quit`: the client game restarts in the lobby and the client helper keeps running. The client game exiting then ends the helper |
 | LobbyHostGoneBeforeCity | The host leaves before loading a city: the client goes back to the lobby without its game being closed |
+| MenuButtons | The main menu shows Host and Join and what Join will use. Join with no address explains; Host hosts and shows the invite and Stop; the client's Join reaches its last host and shows "Joined Hosty"; the host's menu counts the friend; Stop ends hosting. Run with `--no-clipboard` |
+| LuaMenu | `lua/menu.lua` against its stand-in engine (see Lua tests above) |
 
 HostJoin (which includes the host going to the menu), HostQuit, HostKilled and IgnoreLeave cover the 0.3.0 table.
 The frozen-host case is not automated.

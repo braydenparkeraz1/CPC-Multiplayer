@@ -11,14 +11,24 @@ by decompiling it with ILSpy; that is the first commit. The Lua files in `lua/` 
 Every player needs the game and `CPC-Multiplayer.exe` (see [Build](#build)). The helper finds the game in your Steam
 library and installs the mod scripts by itself.
 
+**Without a terminal:** double-click `CPC-Multiplayer.exe` (or start the game from Steam, see [Main menu buttons](#main-menu-buttons)).
+The game starts with **Host** and **Join** on its main menu.
+
+1. **Host:** press Host, then load or start the city you want to share. Your address is copied to the clipboard;
+   paste it to your friends.
+2. **Friends:** copy the host's address and press Join. The game loads the host's city. Next time, Join with an empty
+   clipboard joins the last host again.
+
+**From a terminal:**
+
 1. **Host:** run `CPC-Multiplayer.exe host`. The game starts; load or start the city you want to share. A city that
    has never been saved needs a save (Esc > Save) before a friend can join.
 2. **Friends:** run `CPC-Multiplayer.exe join <host's IP>`. The game starts and loads the host's city.
 3. Play. Builds, demolitions, roads, floors, land, prices and money are shared. Close the game or type `quit` to stop.
 
-Or just start `CPC-Multiplayer.exe` (double-click it): the game starts right away, and you type `host` or `join <ip>`
-in its window once the game is up (lobby mode). Over the internet the host
-needs TCP port 27777 forwarded (or `--port`). Every player must run the same version.
+Or start `CPC-Multiplayer.exe` from a terminal without a mode: the game starts right away, and you type `host` or
+`join <ip>` in the terminal, or use the buttons (lobby mode). Over the internet the host needs TCP port 27777 forwarded
+(or `--port`), or everyone on one VPN. Every player must run the same version.
 
 What is shared:
 
@@ -79,6 +89,35 @@ version (in the first lines).
 
 `helper-<mode>.log` in `multiplayer/runtime` is still written as before (overwritten each run).
 
+## Main menu buttons
+
+In lobby mode (below) the game's main menu shows two lines about multiplayer and buttons, above the game's own menu:
+
+| Button | Shown | Effect |
+|---|---|---|
+| Host | in the lobby | Like `host`. Copies your address(es) for friends to the clipboard, e.g. `192.168.1.20:27777, 26.10.4.2:27777` (home network first, then VPNs; at most 3) |
+| Join | in the lobby | Like `join`, with the addresses found on the clipboard (an invite, or a chat message with an IP in it), tried in turn; with none, the last host that worked |
+| Stop / Leave | hosting / joined | Like `leave` |
+
+The lines say what is going on (hosting, how many friends joined, the invite, waiting for the host's city) and show the
+latest error, e.g. a failed connection.
+
+- **How it works.** The game draws its own menu in its engine, which Lua can't add to. So the buttons are the game's 3D
+  letters (`assets/models/3d_text.glb`), placed in the main menu's 3D scene in front of its camera by `lua/menu.lua`. A
+  click on one is sent to the helper, which runs it like a typed command and sends back what the menu should show.
+  Clicks on the game's own menu never reach Lua.
+- **No text box.** The game gives Lua no text input (only the keys it binds itself), hence the clipboard.
+- **The letters have only A-Z and 0-9.** `.`, `:` and `-` are drawn with small letter shapes, and other characters
+  are left out.
+- **No console window.** Started on its own (a double-click, or Steam), the helper hides its console window, since
+  the menu has everything. Started from a terminal, it keeps the terminal, and `--console` (or `--dev`) keeps the window
+  in any case. With the window hidden, errors that used to wait for Enter show a message box (e.g. the game wasn't found).
+  The playtest log has everything the window would have shown.
+- **From Steam.** In Steam, right-click the game > Properties > Launch options:
+  `"C:\path\to\CPC-Multiplayer.exe" %command%`. Play then starts the helper, which starts the game (the helper ignores the
+  game's own command line that Steam adds).
+- `--no-clipboard` keeps the buttons off the clipboard (the tests use it); Join then uses the last host only.
+
 ## Lobby mode
 
 `CPC-Multiplayer.exe` with no mode (or `CPC-Multiplayer.exe lobby`) starts the game first and lets you pick afterwards
@@ -103,6 +142,8 @@ Windows user name.
 ## Changes in 0.4.0
 
 - **Lobby mode** (above).
+- **Host and Join buttons on the game's main menu**, and no console window when the helper is started on its own (see
+  Main menu buttons).
 - **The host's city decides.** A client's build goes to the host and on to everyone else straight away, and the host's
   game replays it. If the host's game can't place it (the host, or another friend, built there first), the host sends
   `undo` and every game takes it back; the builder sees "Your X overlapped something in the host's city". When it does
@@ -188,7 +229,7 @@ Windows user name.
 
 | File | Role |
 |---|---|
-| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`, `--no-share-log`), console menu; `Ui` writes status lines to a sink (the console today) |
+| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`, `--no-share-log`, `--console`, `--no-clipboard`, and a path to `carparkcapital.exe` from Steam's `%command%`), console menu; `Ui` writes status lines to a sink (the console today) |
 | `src/Settings.cs`, `SteamName.cs`, `Util.cs` | `multiplayer/settings.json` (name, recent hosts); the Steam profile name as the default name; JSON and small helpers |
 | `src/Session/Session.cs` | The helper while the game runs: main loop, starting and relaunching the game, the lobby, shutting down. Its header explains how the parts fit |
 | `src/Session/Session.Game.cs` | The mod in our game: its `MP>` lines, and messages we send it |
@@ -199,6 +240,7 @@ Windows user name.
 | `src/Session/Session.Prices.cs` | Prices: our game's edits, the host's table and its broadcasts |
 | `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
+| `src/Session/Session.Menu.cs`, `src/Invite.cs`, `src/Clipboard.cs`, `src/ConsoleWindow.cs` | The main menu's buttons: what they show and do; the host's invite and the addresses in copied text; the clipboard; hiding the console window |
 | `src/Session/Session.Log.cs`, `src/PlayLog.cs` | The playtest log: its file and line format, snapshots, players' notes |
 | `src/Protocol/Msg.cs`, `BuildEvent.cs` | Building and reading messages; checking build events (`place`/`demolish`/`remove`) |
 | `src/Sync/ChangeLog.cs` | Host: every change since the city opened, for joiners |
@@ -219,6 +261,7 @@ Windows user name.
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; keeps the digest of shared objects and repairs buckets; runs the repaint queue; reports the map size |
 | `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices |
 | `lua/money.lua` | Marker transactions for finding the money; applies friends' spends on the host |
+| `lua/menu.lua` | The main menu's Host/Join buttons and status lines, as 3D letters in the menu's scene |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
 | `tests/` | Stand-in game, scenario runner, Lua tests with a stand-in engine, helper unit tests (see `tests/README.md`) |
@@ -253,9 +296,11 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). Every 2 s when it changes, at least every 10 s, and after `sync?` (0.4.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
-`demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, and `trace`, which only goes in the playtest log), and the
+`demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, `menu`, and `trace`, which only goes in the playtest log), and the
 helper writes messages to the inbox file (`hello`, `loadworld`, `leave`, `place`, `demolish`, `remove`, `undo`, `dump`,
-`reconcile`, `paint`, `eval`).
+`reconcile`, `paint`, `eval`, `menu`).
+The main menu: inbox `menu` (`lines`: up to 2 strings, `buttons`: `{id, label}`; each replaces the last) is what it
+shows, and the mod's `menu` (`click`: a button's `id`) is a click.
 Prices add `setting` (game → helper, a local
 change, with its own `seq`), inbox `settings` (apply these; `seen` is the newest `seq` the helper had, so the game skips
 values for a field it changed later), inbox `settings?` (reply with all values) and its `settings` reply. For money:

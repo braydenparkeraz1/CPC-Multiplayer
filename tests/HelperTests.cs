@@ -52,6 +52,37 @@ internal static class HelperTests
 
 	private static int Main()
 	{
+		Run("Join finds the addresses in copied text", () =>
+		{
+			Eq(string.Join(" ", Invite.Parse("192.168.1.20:27777, 26.10.4.2:27777").ToArray()), "192.168.1.20:27777 26.10.4.2:27777", "an invite");
+			Eq(string.Join(" ", Invite.Parse("join me at 10.0.0.5 tonight!").ToArray()), "10.0.0.5", "an address in chat, no port");
+			Eq(string.Join(" ", Invite.Parse("  010.000.000.007:28000\r\n").ToArray()), "10.0.0.7:28000", "leading zeros and a newline");
+			Eq(Invite.Parse("1.2.3.4:5, 1.2.3.4:5").Count, 1, "duplicates");
+			Eq(Invite.Parse("1.1.1.1 2.2.2.2 3.3.3.3 4.4.4.4").Count, Invite.MaxAddresses, "at most MaxAddresses");
+			Eq(Invite.Parse("300.1.1.1 0.1.2.3 1.2.3.4:70000 1.2.3.4.5 version 0.4.0").Count, 0, "not addresses");
+			Eq(Invite.Parse(null).Count, 0, "empty clipboard");
+			Eq(Invite.Parse(new string('1', 5000) + " 1.2.3.4").Count, 0, "huge text is ignored");
+		});
+
+		Run("an invite lists home-network addresses first", () =>
+		{
+			System.Net.IPAddress[] addresses = new[] { "26.10.4.2", "127.0.0.1", "169.254.3.3", "192.168.1.20", "100.101.102.103", "10.0.0.5" }
+				.Select(System.Net.IPAddress.Parse).ToArray();
+			Eq(Invite.Make(Invite.Order(addresses), 27777), "192.168.1.20:27777, 10.0.0.5:27777, 26.10.4.2:27777", "order and count");
+			Eq(Invite.Make(Invite.Order(new System.Net.IPAddress[0]), 27777), "", "no network");
+		});
+
+		Run("Steam's launch options start the lobby in the game's folder", () =>
+		{
+			Options options = Options.Parse(new[] { "--port", "27801", @"C:\Games\Car Park Capital\carparkcapital.exe", "-windowed", "--port", "1" });
+			Eq(options.Mode, null, "mode (lobby)");
+			Eq(options.Port, 27801, "options after the game's path are the game's");
+			Eq(options.GameDir, @"C:\Games\Car Park Capital", "game folder");
+			Check(Options.Parse(new[] { "--game", @"D:\CPC", @"C:\Games\Car Park Capital\carparkcapital.exe" }).GameDir == @"D:\CPC", "--game wins");
+			Check(Options.Parse(new[] { "--console" }).ShowConsole, "--console");
+			Check(!Options.Parse(new[] { "--no-clipboard" }).UseClipboard, "--no-clipboard");
+		});
+
 		Run("build events are checked and copied", () =>
 		{
 			Dictionary<string, object> ev = BuildEvent.Sanitize("place", Place("Bench@3,1,2/0/0", "Bench", 3));

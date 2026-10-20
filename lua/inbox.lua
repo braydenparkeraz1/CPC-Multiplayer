@@ -81,6 +81,10 @@ MP.handlers.leave = function(msg)
     openScreen("scripts/ui_screens/MPLoad")
 end
 
+-- What the main menu's buttons show (lua/menu.lua replaces this on the main menu). One can arrive
+-- just as the game leaves the menu; nothing to show then.
+MP.handlers.menu = function(msg) end
+
 MP.handlers.hello = function(msg)
     MP.role = msg.role
     MP.playerName = msg.name

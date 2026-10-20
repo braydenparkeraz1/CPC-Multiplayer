@@ -128,6 +128,9 @@ internal partial class Session
 				Ui.Warn("Could not place a synced object: " + Util.Str(d, "err"));
 			}
 			break;
+		case "menu":
+			OnMenuClick(Util.Str(d, "click") ?? "");
+			break;
 		case "eval":
 			Ui.Info("lua> " + Util.Str(d, "out"));
 			if (opts.Dev)
@@ -187,6 +190,8 @@ internal partial class Session
 		string before = gameContext;
 		gameContext = Util.Str(d, "context") ?? "?";
 		PlayLog.Write("state", $"room {roomSeq}: game {before} -> {gameContext}");
+		// A new main menu shows nothing until we send it what to show.
+		menuShown = null;
 		gameReady = false;
 		gamePaused = false;
 		worldPending = true;
