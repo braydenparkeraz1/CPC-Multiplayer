@@ -19,7 +19,7 @@ _G.MP = MP
 
 MP.ROOT = "multiplayer/"
 MP.POLL_INTERVAL = 0.1
-MP.VERSION = "0.3.0"
+MP.VERSION = "0.4.0"
 
 function MP.log(...)
     local parts = {}

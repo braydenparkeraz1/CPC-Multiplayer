@@ -1,4 +1,5 @@
-# Builds CPC-Multiplayer.exe and the stand-in game (tests/FakeGame.cs) into .testrun\bin.
+# Builds CPC-Multiplayer.exe, the stand-in game (tests/FakeGame.cs) and the Lua test runner
+# (tests/LuaRunner.cs, with lua54.dll) into .testrun\bin.
 #
 # Uses the .NET SDK (dotnet build) when one is installed. Otherwise it compiles with Roslyn's csc.dll
 # from the Microsoft.Net.Compilers.Toolset NuGet package (downloaded once into .testrun\tools), run on
@@ -14,6 +15,7 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $toolsDir = Join-Path $root ".testrun\tools"
 $roslynVersion = "4.11.0"
+$keraLuaVersion = "1.4.4"
 $fw = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319"
 
 function Get-Csc {
@@ -77,12 +79,51 @@ if ($hasSdk) {
     Invoke-Csc $a
 }
 
+# Lua 5.4 for the mod's Lua tests (tests/lua): lua54.dll from the KeraLua package, downloaded once.
+function Get-Lua54 {
+    $dll = Join-Path $toolsDir "keralua-$keraLuaVersion\runtimes\win-x64\native\lua54.dll"
+    if (Test-Path $dll) { return $dll }
+    $pkgDir = Join-Path $toolsDir "keralua-$keraLuaVersion"
+    $zip = Join-Path $toolsDir "keralua-$keraLuaVersion.zip"
+    New-Item -ItemType Directory -Force $toolsDir | Out-Null
+    Write-Host "Downloading KeraLua $keraLuaVersion (Lua 5.4) from nuget.org..."
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest "https://www.nuget.org/api/v2/package/KeraLua/$keraLuaVersion" -OutFile $zip -UseBasicParsing
+    Expand-Archive $zip $pkgDir -Force
+    Remove-Item $zip
+    if (-not (Test-Path $dll)) { throw "lua54.dll not found in the package" }
+    return $dll
+}
+
 Write-Host "Building the stand-in game..."
 # Commas bind tighter than + in PowerShell, so concatenations in these lists are parenthesised.
 $a = @("-nologo", "-nostdlib+", "-target:exe", "-platform:x64", "-langversion:12", "-optimize+",
     ("-out:" + (Q (Join-Path $fakeOut "carparkcapital.exe"))),
     ("-reference:" + (Q (Join-Path $fw "mscorlib.dll"))), ("-reference:" + (Q (Join-Path $fw "System.dll"))),
+    ("-reference:" + (Q (Join-Path $fw "System.Core.dll"))),
     (Q (Join-Path $root "tests\FakeGame.cs")))
+Invoke-Csc $a
+
+Write-Host "Building the Lua test runner..."
+$luaOut = Join-Path $Out "luarun"
+New-Item -ItemType Directory -Force $luaOut | Out-Null
+Copy-Item (Get-Lua54) $luaOut -Force
+$a = @("-nologo", "-nostdlib+", "-target:exe", "-platform:x64", "-langversion:12", "-optimize+",
+    ("-out:" + (Q (Join-Path $luaOut "luarun.exe"))),
+    ("-reference:" + (Q (Join-Path $fw "mscorlib.dll"))),
+    (Q (Join-Path $root "tests\LuaRunner.cs")))
+Invoke-Csc $a
+
+Write-Host "Building the helper unit tests..."
+$testOut = Join-Path $Out "tests"
+New-Item -ItemType Directory -Force $testOut | Out-Null
+$a = @("-nologo", "-nostdlib+", "-target:exe", "-platform:x64", "-langversion:12", "-unsafe+", "-optimize+",
+    "-main:HelperTests", ("-out:" + (Q (Join-Path $testOut "helpertests.exe"))))
+foreach ($ref in "mscorlib.dll", "System.dll", "System.Core.dll", "System.Web.Extensions.dll") {
+    $a += "-reference:" + (Q (Join-Path $fw $ref))
+}
+$a += Get-ChildItem (Join-Path $root "src") -Recurse -Filter *.cs | ForEach-Object { Q $_.FullName }
+$a += Q (Join-Path $root "tests\HelperTests.cs")
 Invoke-Csc $a
 
 Write-Host "Built into $Out"

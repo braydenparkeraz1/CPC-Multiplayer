@@ -73,40 +73,36 @@ internal class GameProcess
 
 	public void Start(string gameDir, string session)
 	{
-		ProcessStartInfo processStartInfo = new ProcessStartInfo(Path.Combine(gameDir, "carparkcapital.exe"), "-mpsession " + session);
-		processStartInfo.WorkingDirectory = gameDir;
-		processStartInfo.UseShellExecute = false;
-		processStartInfo.RedirectStandardOutput = true;
-		processStartInfo.RedirectStandardError = true;
-		processStartInfo.StandardOutputEncoding = Encoding.UTF8;
-		processStartInfo.StandardErrorEncoding = Encoding.UTF8;
-		ProcessStartInfo startInfo = processStartInfo;
+		// The mod reads "-mpsession <id>" to find its inbox; the game reads arguments as key/value pairs.
+		ProcessStartInfo startInfo = new ProcessStartInfo(Path.Combine(gameDir, "carparkcapital.exe"), "-mpsession " + session)
+		{
+			WorkingDirectory = gameDir,
+			UseShellExecute = false,
+			RedirectStandardOutput = true,
+			RedirectStandardError = true,
+			StandardOutputEncoding = Encoding.UTF8,
+			StandardErrorEncoding = Encoding.UTF8
+		};
 		proc = new Process
 		{
 			StartInfo = startInfo,
 			EnableRaisingEvents = true
 		};
-		proc.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
+		proc.OutputDataReceived += (s, e) =>
 		{
-			if (e.Data != null && this.Line != null)
+			if (e.Data != null)
 			{
-				this.Line(e.Data);
+				Line?.Invoke(e.Data);
 			}
 		};
-		proc.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e)
+		proc.ErrorDataReceived += (s, e) =>
 		{
 			if (e.Data != null)
 			{
 				Ui.Log("[stderr] " + e.Data);
 			}
 		};
-		proc.Exited += delegate
-		{
-			if (this.Exited != null)
-			{
-				this.Exited();
-			}
-		};
+		proc.Exited += (s, e) => Exited?.Invoke();
 		started = DateTime.Now;
 		proc.Start();
 		proc.BeginOutputReadLine();

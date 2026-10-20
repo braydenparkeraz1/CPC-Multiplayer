@@ -6,7 +6,7 @@ namespace CpcMultiplayer;
 
 internal static class Program
 {
-	public const string Version = "0.3.0";
+	public const string Version = "0.4.0";
 
 	public const int DefaultPort = 27777;
 
@@ -25,10 +25,10 @@ internal static class Program
 		{
 			return Run(args);
 		}
-		catch (Exception ex2)
+		catch (Exception ex)
 		{
-			Ui.Error("Unexpected error: " + ex2.Message);
-			Ui.Log(ex2.ToString());
+			Ui.Error("Unexpected error: " + ex.Message);
+			Ui.Log(ex.ToString());
 			Ui.PressEnter();
 			return 1;
 		}
@@ -37,14 +37,14 @@ internal static class Program
 	private static int Run(string[] args)
 	{
 		Options options = Options.Parse(args);
-		string text = GameInstall.Find(options.GameDir);
-		if (text == null)
+		string gameDir = GameInstall.Find(options.GameDir);
+		if (gameDir == null)
 		{
 			Ui.Error("Could not find Car Park Capital. Run with --game \"<folder with carparkcapital.exe>\".");
 			Ui.PressEnter();
 			return 1;
 		}
-		Ui.Info("Game folder: " + text);
+		Ui.Info("Game folder: " + gameDir);
 		if (options.Mode == null)
 		{
 			options.Mode = Ui.AskMode();
@@ -53,21 +53,21 @@ internal static class Program
 				return 1;
 			}
 		}
-		Ui.OpenLog(Path.Combine(text, "multiplayer", "runtime", "helper-" + options.Mode + ".log"));
+		Ui.OpenLog(Path.Combine(gameDir, "multiplayer", "runtime", "helper-" + options.Mode + ".log"));
 		if (options.Mode == "uninstall")
 		{
-			GameInstall.Uninstall(text);
+			GameInstall.Uninstall(gameDir);
 			Ui.PressEnter();
 			return 0;
 		}
-		GameInstall.Install(text);
+		GameInstall.Install(gameDir);
 		if (options.Mode == "install")
 		{
 			Ui.Info("Mod installed. Start the helper again to host or join.");
 			Ui.PressEnter();
 			return 0;
 		}
-		Settings settings = Settings.Load(text);
+		Settings settings = Settings.Load(gameDir);
 		if (options.Mode == "join" && string.IsNullOrEmpty(options.Address))
 		{
 			options.Address = Ui.Ask("Host address (IP or IP:port)", settings.LastHost);
@@ -84,7 +84,6 @@ internal static class Program
 		options.Name = Util.CleanName(options.Name);
 		settings.Name = options.Name;
 		settings.Save();
-		Session session = new Session(text, options, settings);
-		return session.Run();
+		return new Session(gameDir, options, settings).Run();
 	}
 }

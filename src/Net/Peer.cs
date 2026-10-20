@@ -58,9 +58,7 @@ internal class Peer
 		// A peer that stops reading (crashed PC, dropped network) must not keep the writer stuck.
 		client.SendTimeout = 15000;
 		stream = client.GetStream();
-		Thread thread = new Thread(WriteLoop);
-		thread.IsBackground = true;
-		thread.Start();
+		new Thread(WriteLoop) { IsBackground = true }.Start();
 	}
 
 	public void Send(Dictionary<string, object> msg)
@@ -113,23 +111,21 @@ internal class Peer
 
 	public void StartReading(Action<Peer, Dictionary<string, object>> onMessage, Action<Peer> onClosed)
 	{
-		Thread thread = new Thread((ThreadStart)delegate
+		Thread thread = new Thread(() =>
 		{
 			try
 			{
-				StreamReader streamReader = new StreamReader(new ActivityStream(stream, delegate
+				StreamReader reader = new StreamReader(new ActivityStream(stream, () => Interlocked.Exchange(ref lastReceived, DateTime.UtcNow.Ticks)),
+					new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+				string line;
+				while ((line = reader.ReadLine()) != null)
 				{
-					Interlocked.Exchange(ref lastReceived, DateTime.UtcNow.Ticks);
-				}), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-				string text;
-				while ((text = streamReader.ReadLine()) != null)
-				{
-					if (text.Length != 0)
+					if (line.Length != 0)
 					{
-						Dictionary<string, object> dictionary;
+						Dictionary<string, object> msg;
 						try
 						{
-							dictionary = Util.Json.Deserialize<Dictionary<string, object>>(text);
+							msg = Util.Json.Deserialize<Dictionary<string, object>>(line);
 						}
 						catch (ArgumentException)
 						{
@@ -139,9 +135,9 @@ internal class Peer
 						{
 							continue;
 						}
-						if (dictionary != null)
+						if (msg != null)
 						{
-							onMessage(this, dictionary);
+							onMessage(this, msg);
 						}
 					}
 				}
