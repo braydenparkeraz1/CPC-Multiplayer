@@ -147,14 +147,14 @@ Windows user name.
     one that reaches the host last wins on every PC.
   - Inbox messages of this kind replace each other, so a paused or loading game doesn't collect stale copies.
 - **Money is shared.** The host's balance is the city's wallet, and every player sees it.
-  - Lua can change the money but not read it, so the helper finds the balance in the game's memory (`src/MoneySync.cs`):
+  - Lua can change the money but not read it, so the helper finds the balance in the game's memory (`src/Sync/MoneySync.cs`):
     it scans for values near the balance in the city's save, the mod adds and takes back a $500 marker, and of the
     values that moved with it, the balance is the one whose HUD copy follows a small nudge. This takes about 20 s after a
     city loads, and shows as "Shared money: on".
   - The host's helper sends its balance every 2 s (at least every 10 s). A friend's helper writes it into its own game,
     so a friend's own simulation earns and pays nothing.
   - A friend's build is charged by their game and sent to the host as a numbered `spend`, which the host's game applies
-    once (`transactMoney`). Prices come from the game's template scripts (`src/Prices.cs`); demolitions give half back
+    once (`transactMoney`). Prices come from the game's template scripts (`src/Game/Prices.cs`); demolitions give half back
     unless the template says otherwise. Roads and floors cost their material's price per tile. Land plots, and builds
     missing from the table, are charged what the friend's game spent (not tried in game yet: before this, a friend's
     land purchase was free).

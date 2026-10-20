@@ -616,7 +616,7 @@ function Scenario-PriceStaleAtClient {
 $F1 = "TestFlag@10,8,20/0/0"
 $F2 = "TestFlag@12,8,20/0/0"
 
-# Both helpers have found their game's money (scan + marker + nudge, see src/MoneySync.cs).
+# Both helpers have found their game's money (scan + marker + nudge, see src/Sync/MoneySync.cs).
 function Start-MoneyPair {
     $s = Start-HostAndClient
     Expect "host finds its game's money" { HelperLog $s.h } "Shared money: on" 1 40
