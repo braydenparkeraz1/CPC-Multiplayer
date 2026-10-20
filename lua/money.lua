@@ -1,6 +1,6 @@
 -- Car Park Capital Multiplayer - shared money.
 -- Lua can change the city's money (transactMoney) but can't read it, so the helper reads and writes
--- the balance in the game's memory (src/MoneySync.cs). This module makes the marker transactions the
+-- the balance in the game's memory (src/Sync/MoneySync.cs). This module makes the marker transactions the
 -- helper uses to find the balance, and on the host applies what friends spend.
 local MP = ...
 
