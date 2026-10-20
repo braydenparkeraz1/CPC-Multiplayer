@@ -16,8 +16,9 @@ The game starts with **Host** and **Join** on its main menu.
 
 1. **Host:** press Host, then load or start the city you want to share. Your address is copied to the clipboard;
    paste it to your friends.
-2. **Friends:** copy the host's address and press Join. The game loads the host's city. Next time, Join with an empty
-   clipboard joins the last host again.
+2. **Friends:** on the same network, press **Join** with the host's name (e.g. Join Hosty); it shows up a few seconds
+   after the host presses Host. Otherwise copy the host's address and press Join. The game loads the host's city. Next
+   time, Join with an empty clipboard joins the last host again.
 
 **From a terminal:**
 
@@ -97,6 +98,7 @@ In lobby mode (below) the game's main menu shows two lines about multiplayer and
 |---|---|---|
 | Host | in the lobby | Like `host`. Copies your address(es) for friends to the clipboard, e.g. `192.168.1.20:27777, 26.10.4.2:27777` (home network first, then VPNs; at most 3) |
 | Join | in the lobby | Like `join`, with the addresses found on the clipboard (an invite, or a chat message with an IP in it), tried in turn; with none, the last host that worked |
+| Join *name* | in the lobby, for up to 2 games hosted on your network | Joins that host. No copying: hosts announce themselves on the network (below) |
 | Stop / Leave | hosting / joined | Like `leave` |
 
 The lines say what is going on (hosting, how many friends joined, the invite, waiting for the host's city) and show the
@@ -117,6 +119,23 @@ latest error, e.g. a failed connection.
   `"C:\path\to\CPC-Multiplayer.exe" %command%`. Play then starts the helper, which starts the game (the helper ignores the
   game's own command line that Steam adds).
 - `--no-clipboard` keeps the buttons off the clipboard (the tests use it); Join then uses the last host only.
+- **Games on your network.** While hosting, the helper broadcasts a short UDP message every 2 s on port 27778 (the
+  host's name, mod version and TCP port) to every network it is on, including VPNs like ZeroTier or Radmin that pass
+  broadcasts, and to this PC. A helper in the lobby listens there and offers each game heard in the last 6 s with the
+  same mod version as a **Join *name*** button (button ids `lan:<ip>:<port>`), oldest first, at most 2; the window
+  also prints `join <ip>:<port>` for it. It joins the address the message came from, preferring a home network over a
+  VPN. The name is cut to 10 characters, and characters the letters lack become spaces (a name with none left shows
+  the IP). Hosting stops the messages, and the button disappears a few seconds later.
+  - `--lan-port <port>` uses another UDP port (both sides need the same), `--no-lan` turns it off. Several helpers on
+    one PC can listen at once (the socket shares the port).
+  - When the port is taken, Windows Firewall blocks it (it may ask to allow CPC-Multiplayer the first time; that
+    also covers hosting), or the network has no broadcasts (some Wi-Fi with client isolation, most internet VPNs),
+    there are just no such buttons; Host, Join and typed commands work as before. Problems are only in the helper's log.
+- **The button row fits the screen.** Buttons are one centred row just above the game's own menu panel (which has a
+  fixed pixel size, so in a 720p window it reaches up to just below the row). A row wider than 90% of the screen, as
+  with two found games at 16:9, is drawn smaller (0.57 of full size with two 10-character names), keeping its
+  baseline, so it never reaches down into the panel. Host, Join and one found game with a name of up to 8
+  characters fit at full size.
 
 ## Lobby mode
 
@@ -229,7 +248,7 @@ Windows user name.
 
 | File | Role |
 |---|---|
-| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`, `--no-share-log`, `--console`, `--no-clipboard`, and a path to `carparkcapital.exe` from Steam's `%command%`), console menu; `Ui` writes status lines to a sink (the console today) |
+| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`, `--no-share-log`, `--console`, `--no-clipboard`, `--lan-port <port>`, `--no-lan`, and a path to `carparkcapital.exe` from Steam's `%command%`), console menu; `Ui` writes status lines to a sink (the console today) |
 | `src/Settings.cs`, `SteamName.cs`, `Util.cs` | `multiplayer/settings.json` (name, recent hosts); the Steam profile name as the default name; JSON and small helpers |
 | `src/Session/Session.cs` | The helper while the game runs: main loop, starting and relaunching the game, the lobby, shutting down. Its header explains how the parts fit |
 | `src/Session/Session.Game.cs` | The mod in our game: its `MP>` lines, and messages we send it |
@@ -241,6 +260,7 @@ Windows user name.
 | `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
 | `src/Session/Session.Menu.cs`, `src/Invite.cs`, `src/Clipboard.cs`, `src/ConsoleWindow.cs` | The main menu's buttons: what they show and do; the host's invite and the addresses in copied text; the clipboard; hiding the console window |
+| `src/Session/Session.Lan.cs`, `src/Net/Lan.cs` | Games on the same network: announcing ours while hosting, the games heard lately for the menu's buttons; the message format and the UDP sockets |
 | `src/Session/Session.Log.cs`, `src/PlayLog.cs` | The playtest log: its file and line format, snapshots, players' notes |
 | `src/Protocol/Msg.cs`, `BuildEvent.cs` | Building and reading messages; checking build events (`place`/`demolish`/`remove`) |
 | `src/Sync/ChangeLog.cs` | Host: every change since the city opened, for joiners |
@@ -261,7 +281,7 @@ Windows user name.
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; keeps the digest of shared objects and repairs buckets; runs the repaint queue; reports the map size |
 | `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices |
 | `lua/money.lua` | Marker transactions for finding the money; applies friends' spends on the host |
-| `lua/menu.lua` | The main menu's Host/Join buttons and status lines, as 3D letters in the menu's scene |
+| `lua/menu.lua` | The main menu's Host/Join buttons and status lines, as 3D letters in the menu's scene; a row too wide for the screen is drawn smaller |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
 | `tests/` | Stand-in game, scenario runner, Lua tests with a stand-in engine, helper unit tests (see `tests/README.md`) |
@@ -270,6 +290,11 @@ Windows user name.
 ## Network protocol
 
 TCP, port 27777 by default, one JSON object per line, field `t` is the type.
+
+Hosts on the same network also announce themselves over UDP (port 27778, every 2 s, to each network's broadcast
+address, 255.255.255.255 and 127.255.255.255): one datagram of at most 512 bytes, `CPCMP-LAN 1 ` followed by
+`{"id":"<random per run>","name":"<host's name, at most 32 chars>","version":"<mod version>","port":<TCP port>}`.
+Anything else on the port is ignored.
 
 | Type | Direction | Meaning |
 |---|---|---|

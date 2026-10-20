@@ -4,7 +4,9 @@
 -- front of its camera. Clicks on the engine's menu never reach Lua, so the two can't get mixed up.
 --
 -- The helper decides what the menu shows: inbox "menu" = { lines = { "...", ... }, buttons = { { id = "host",
--- label = "HOST" }, ... } }. A click on a button goes back as MP>{"t":"menu","d":{"click":"<id>"}}.
+-- label = "HOST" }, ... } }. A click on a button goes back as MP>{"t":"menu","d":{"click":"<id>"}}. Games found on the
+-- network add buttons (id "lan:<ip>:<port>", label "Join <name>"), so the row can be too wide for the screen; it is
+-- then drawn smaller.
 local MP = ...
 
 -- Camera space: DEPTH units in front of the camera, so with the menu camera's narrow view a unit is
@@ -13,6 +15,7 @@ local DEPTH = 85
 local ADVANCE = 0.75          -- letter spacing (a letter is ~0.68 wide and 0.73 tall at scale 1)
 local LETTER_HEIGHT = 0.73
 local BUTTON_GAP = 1.6        -- between two buttons
+local ROW_FILL = 0.9          -- how much of the screen's width the button row may use
 -- Between the logo and the engine's menu panel, which has a fixed size in pixels, so it reaches up to
 -- about y = -2.5 in a 720p window. Two status lines at most, then the buttons.
 local LINE_Y = -0.45          -- baseline of the first status line
@@ -121,6 +124,14 @@ local function cleanText(s)
     return tostring(s or ""):upper():gsub("[^A-Z0-9 .:%-]", " ")
 end
 
+-- Units visible across the screen at DEPTH, less a margin at each side.
+local function rowWidth(cam)
+    local size = getScreenSize()
+    local fov = component.CameraPerspective.getFor(cam).fieldOfView
+    local height = 2 * DEPTH * math.tan(math.rad(fov) / 2)
+    return height * size.x / math.max(size.y, 1) * ROW_FILL
+end
+
 function menu.render()
     clear()
     local state = menu.state
@@ -136,13 +147,17 @@ function menu.render()
     for i, b in ipairs(buttons) do
         total = total + #cleanText(b.label) * ADVANCE + (i > 1 and BUTTON_GAP or 0)
     end
-    local x = -total / 2
+    -- One row, on its baseline (so it never reaches down into the engine's panel); a row wider than
+    -- the screen (Join buttons for games found on the network) is drawn smaller.
+    local scale = math.min(1, rowWidth(cam) / math.max(total, 0.001))
+    local gap = BUTTON_GAP * scale
+    local x = -total * scale / 2
     for _, b in ipairs(buttons) do
         local label = cleanText(b.label)
-        local letters, width = spawnText(cam, label, x, BUTTON_Y, 1, BUTTON_COLOR)
+        local letters, width = spawnText(cam, label, x, BUTTON_Y, scale, BUTTON_COLOR)
         menu.buttons[#menu.buttons + 1] = { id = b.id, letters = letters, x0 = x, x1 = x + width,
-            y0 = BUTTON_Y, y1 = BUTTON_Y + LETTER_HEIGHT }
-        x = x + width + BUTTON_GAP
+            y0 = BUTTON_Y, y1 = BUTTON_Y + LETTER_HEIGHT * scale }
+        x = x + width + gap
     end
 end
 

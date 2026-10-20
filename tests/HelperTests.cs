@@ -72,6 +72,102 @@ internal static class HelperTests
 			Eq(Invite.Make(Invite.Order(new System.Net.IPAddress[0]), 27777), "", "no network");
 		});
 
+		Run("a host's network announcement reads back as sent", () =>
+		{
+			LanAnnounce sent = new LanAnnounce { Id = "abc123", Name = "Hosty \"the\" Host|é", Version = "0.4.0", Port = 27801 };
+			byte[] bytes = sent.ToBytes();
+			Check(Encoding.UTF8.GetString(bytes).StartsWith("CPCMP-LAN 1 {"), "magic, then JSON");
+			LanAnnounce got = LanAnnounce.Parse(bytes, bytes.Length);
+			Check(got != null, "parsed");
+			Eq(got.Id, "abc123", "id");
+			Eq(got.Name, "Hosty \"the\" Host|é", "name");
+			Eq(got.Version, "0.4.0", "version");
+			Eq(got.Port, 27801, "port");
+			// Received into a bigger buffer: only the datagram's length counts.
+			byte[] buffer = new byte[1024];
+			Array.Copy(bytes, buffer, bytes.Length);
+			Eq(LanAnnounce.Parse(buffer, bytes.Length)?.Port, 27801, "in a receive buffer");
+			byte[] longName = new LanAnnounce { Id = "x", Name = new string('n', 100), Version = "1", Port = 1 }.ToBytes();
+			Eq(LanAnnounce.Parse(longName, longName.Length).Name.Length, LanAnnounce.MaxNameLength, "long names are cut");
+		});
+
+		Run("anything else on the announcement port is ignored", () =>
+		{
+			Func<string, LanAnnounce> parse = text => LanAnnounce.Parse(Encoding.UTF8.GetBytes(text), Encoding.UTF8.GetByteCount(text));
+			Check(parse("hello") == null, "no magic");
+			Check(parse("CPCMP-LAN 2 {\"id\":\"a\",\"version\":\"1\",\"port\":5}") == null, "another format version");
+			Check(parse("CPCMP-LAN 1 not json") == null, "bad JSON");
+			Check(parse("CPCMP-LAN 1 [1,2]") == null, "not an object");
+			Check(parse("CPCMP-LAN 1 {\"id\":\"a\",\"version\":\"1\"}") == null, "no port");
+			Check(parse("CPCMP-LAN 1 {\"id\":\"a\",\"version\":\"1\",\"port\":70000}") == null, "bad port");
+			Check(parse("CPCMP-LAN 1 {\"id\":\"a\",\"version\":\"1\",\"port\":\"5\"}") == null, "port as text");
+			Check(parse("CPCMP-LAN 1 {\"version\":\"1\",\"port\":5}") == null, "no id");
+			Check(parse("CPCMP-LAN 1 {\"id\":\"a\",\"port\":5}") == null, "no version");
+			Check(parse("CPCMP-LAN 1 {\"id\":\"a\",\"version\":\"1\",\"port\":5," + new string(' ', 600) + "}") == null, "too long");
+			Eq(parse("CPCMP-LAN 1 {\"id\":\"a\",\"version\":\"1\",\"port\":5}")?.Name, "", "no name is fine");
+			Check(LanAnnounce.Parse(new byte[] { 0x43, 0x50, 0xff, 0xfe, 0x00 }, 5) == null, "not UTF-8");
+			Check(LanAnnounce.Parse(null, 0) == null, "nothing");
+		});
+
+		Run("the lobby keeps games heard lately with our version, once each", () =>
+		{
+			DateTime t = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+			System.Net.IPAddress lan = System.Net.IPAddress.Parse("192.168.1.20");
+			System.Net.IPAddress vpn = System.Net.IPAddress.Parse("10.147.20.5");
+			LanHosts hosts = new LanHosts("me", "0.4.0");
+			LanAnnounce hosty = new LanAnnounce { Id = "h1", Name = "Hosty", Version = "0.4.0", Port = 27777 };
+			Check(hosts.Heard(new LanAnnounce { Id = "me", Name = "Me", Version = "0.4.0", Port = 27777 }, lan, t) == null, "our own announcement");
+			Check(hosts.Heard(new LanAnnounce { Id = "old", Name = "Old", Version = "0.3.0", Port = 27777 }, lan, t) == null, "another version");
+			Eq(hosts.Heard(hosty, lan, t)?.Address, "192.168.1.20:27777", "new host");
+			Check(hosts.Heard(hosty, vpn, t.AddSeconds(1)) == null, "heard again through another network");
+			LanAnnounce third = new LanAnnounce { Id = "h3", Name = "Third", Version = "0.4.0", Port = 27777 };
+			hosts.Heard(third, System.Net.IPAddress.Parse("26.196.177.61"), t);
+			hosts.Heard(third, System.Net.IPAddress.Parse("192.168.1.30"), t.AddSeconds(0.1));
+			Eq(hosts.Current(t.AddSeconds(0.2)).Single(h => h.Id == "h3").Address, "192.168.1.30:27777", "a home network beats a VPN heard first");
+			hosts.Heard(third, System.Net.IPAddress.Loopback, t.AddSeconds(0.3));
+			Eq(hosts.Current(t.AddSeconds(0.4)).Single(h => h.Id == "h3").Address, "192.168.1.30:27777", "and isn't replaced by a worse one");
+			hosts.Heard(new LanAnnounce { Id = "h2", Name = "Second", Version = "0.4.0", Port = 27800 }, vpn, t.AddSeconds(2));
+			Eq(string.Join(" ", hosts.Current(t.AddSeconds(3)).Where(h => h.Id != "h3").Select(h => h.Address).ToArray()), "192.168.1.20:27777 10.147.20.5:27800", "both, first heard first, first address kept");
+			// Hosty keeps announcing, Second stopped hosting.
+			hosts.Heard(hosty, lan, t.AddSeconds(5));
+			Eq(string.Join(" ", hosts.Current(t.AddSeconds(8.5)).Select(h => h.Name).ToArray()), "Hosty", "the silent one expires after 6 s");
+			Eq(hosts.Current(t.AddSeconds(11.5)).Count, 0, "all expired");
+			Check(hosts.Heard(hosty, vpn, t.AddSeconds(12)) != null, "heard again after expiring: new");
+			for (int i = 0; i < 40; i++)
+			{
+				hosts.Heard(new LanAnnounce { Id = "n" + i, Name = "N", Version = "0.4.0", Port = 1000 + i }, lan, t.AddSeconds(13));
+			}
+			Eq(hosts.Current(t.AddSeconds(13)).Count, 16, "a noisy network fills a few, not memory");
+			Eq(hosts.Current(t.AddSeconds(13))[0].Name, "Hosty", "the first stays first");
+		});
+
+		Run("a found game's button label fits the menu's letters", () =>
+		{
+			Eq(new LanHost { Name = "Hosty", Address = "192.168.1.20:27777" }.Label, "Join Hosty", "plain");
+			Eq(LanHost.MenuName("Brayden's  PC!", "1.2.3.4:5"), "Brayden s", "unsupported characters, cut to 10");
+			Eq(LanHost.MenuName("Ünïcødé", "1.2.3.4:5"), "n c d", "letters the menu lacks");
+			Eq(LanHost.MenuName("日本語", "192.168.1.20:27777"), "192.168.1.20", "nothing left: the address");
+			Eq(LanHost.MenuName(null, "10.0.0.5:27777"), "10.0.0.5", "no name");
+		});
+
+		Run("a network's broadcast address", () =>
+		{
+			Func<string, string, string> b = (a, m) => LanDiscovery.DirectedBroadcast(System.Net.IPAddress.Parse(a), System.Net.IPAddress.Parse(m))?.ToString();
+			Eq(b("192.168.0.79", "255.255.252.0"), "192.168.3.255", "/22");
+			Eq(b("10.147.20.173", "255.255.255.0"), "10.147.20.255", "/24");
+			Eq(b("26.196.177.61", "255.0.0.0"), "26.255.255.255", "/8");
+			Eq(b("100.89.171.29", "255.255.255.255"), null, "/32 has none");
+			Eq(b("169.254.3.3", "255.255.0.0"), null, "self-assigned");
+			Eq(b("fe80::1", "255.255.255.0"), null, "IPv6");
+		});
+
+		Run("LAN discovery's port can be changed or turned off", () =>
+		{
+			Eq(Options.Parse(new string[0]).LanPort, 27778, "default");
+			Eq(Options.Parse(new[] { "lobby", "--lan-port", "28778" }).LanPort, 28778, "--lan-port");
+			Eq(Options.Parse(new[] { "lobby", "--no-lan" }).LanPort, 0, "--no-lan");
+		});
+
 		Run("Steam's launch options start the lobby in the game's folder", () =>
 		{
 			Options options = Options.Parse(new[] { "--port", "27801", @"C:\Games\Car Park Capital\carparkcapital.exe", "-windowed", "--port", "1" });

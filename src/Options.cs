@@ -36,6 +36,10 @@ internal class Options
 	// The menu's Host and Join buttons use the clipboard (--no-clipboard, for tests on a PC someone uses).
 	public bool UseClipboard = true;
 
+	// The UDP port hosts announce themselves on, for the menu's Join buttons for games on this network
+	// (--lan-port; --no-lan turns finding and announcing off).
+	public int LanPort = Program.DefaultLanPort;
+
 	public static Options Parse(string[] args)
 	{
 		Options options = new Options();
@@ -103,6 +107,13 @@ internal class Options
 				break;
 			case "--no-clipboard":
 				options.UseClipboard = false;
+				break;
+			case "--lan-port":
+				options.LanPort = int.Parse(next);
+				i++;
+				break;
+			case "--no-lan":
+				options.LanPort = 0;
 				break;
 			default:
 				if (arg.EndsWith("carparkcapital.exe", StringComparison.OrdinalIgnoreCase))

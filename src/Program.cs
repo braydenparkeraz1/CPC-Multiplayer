@@ -10,6 +10,8 @@ internal static class Program
 
 	public const int DefaultPort = 27777;
 
+	public const int DefaultLanPort = 27778;
+
 	private static int Main(string[] args)
 	{
 		try

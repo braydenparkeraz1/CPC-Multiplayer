@@ -10,7 +10,8 @@ namespace CpcMultiplayer;
 // two lines of text and the buttons) and sends back the id of a button that was clicked.
 //
 // The game gives Lua no text input, so Join has no address box: it joins an address on the
-// clipboard (Host copies an invite there), or else the last host that worked.
+// clipboard (Host copies an invite there), or else the last host that worked. Games hosted on the
+// same network get Join buttons of their own (Session.Lan.cs).
 internal partial class Session
 {
 	// Longer lines don't fit the menu.
@@ -76,6 +77,11 @@ internal partial class Session
 				: "To join, copy the host address and press Join"));
 			buttons.Add(MenuButton("host", "Host"));
 			buttons.Add(MenuButton("join", "Join"));
+			// Games found on this network: one click joins.
+			foreach (LanHost found in LanButtons())
+			{
+				buttons.Add(MenuButton("lan:" + found.Address, found.Label));
+			}
 		}
 		else if (IsHost)
 		{
@@ -98,7 +104,7 @@ internal partial class Session
 			}
 		}
 		lines = lines.Select(ShortLine).ToList();
-		string shown = string.Join("\n", lines.ToArray()) + "|" + string.Join(",", buttons.Select(b => (string)b["id"]).ToArray());
+		string shown = string.Join("\n", lines.ToArray()) + "|" + string.Join(",", buttons.Select(b => b["id"] + "=" + b["label"]).ToArray());
 		if (shown == menuShown)
 		{
 			return;
@@ -138,13 +144,21 @@ internal partial class Session
 			HostFromMenu();
 			break;
 		case "join":
-			JoinFromMenu();
+			JoinFromMenu(null);
 			break;
 		case "leave":
 			Leave();
 			break;
 		default:
-			Ui.Log("unknown menu button " + id);
+			List<string> lanAddress = id.StartsWith("lan:", StringComparison.Ordinal) ? Invite.Parse(id.Substring(4)) : null;
+			if (lanAddress?.Count == 1)
+			{
+				JoinFromMenu(lanAddress);
+			}
+			else
+			{
+				Ui.Log("unknown menu button " + id);
+			}
 			break;
 		}
 	}
@@ -166,13 +180,14 @@ internal partial class Session
 		Ui.Info(inviteCopied ? "Your address is on the clipboard, paste it to your friends: " + invite : "Friends join with: " + invite);
 	}
 
-	private void JoinFromMenu()
+	// Joins the given address (a game found on the network), else the clipboard's, else the last host.
+	private void JoinFromMenu(List<string> addresses)
 	{
 		if (role != Role.Lobby || menuJoinTarget != null)
 		{
 			return;
 		}
-		List<string> addresses = opts.UseClipboard ? Invite.Parse(Clipboard.GetText()) : new List<string>();
+		addresses ??= opts.UseClipboard ? Invite.Parse(Clipboard.GetText()) : new List<string>();
 		if (addresses.Count == 0 && settings.LastHost != null)
 		{
 			addresses.Add(settings.LastHost);

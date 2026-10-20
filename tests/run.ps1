@@ -15,6 +15,9 @@ if (-not (Test-Path $helperExe) -or -not (Test-Path $fakeExe)) { throw "Build fi
 
 $script:procs = @()
 $script:port = 27800
+# Every helper here announces and finds games on this UDP port (--lan-port), not the real one, so a game
+# hosted on this network doesn't show up in the tests (nor theirs in its menu). Runs with another port base differ too.
+$script:lanPort = $script:port + 1000
 
 # Retries $action for a few seconds: a just-killed process can still hold its files, and a control file
 # can be mid-delete when we write it.
@@ -46,7 +49,8 @@ function Start-Helper([string]$dir, [string[]]$helperArgs, [hashtable]$envVars =
     $old = @{}
     foreach ($k in $envVars.Keys) { $old[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $envVars[$k]) }
     try {
-        $all = $helperArgs + @("--game", $dir, "--allow-second-instance", "--control", (Join-Path $dir "helper-control.txt"))
+        $all = $helperArgs + @("--game", $dir, "--allow-second-instance", "--control", (Join-Path $dir "helper-control.txt"),
+            "--lan-port", $script:lanPort)
         # stdin is an empty file, so the helper never waits on a prompt or "Press Enter".
         $p = Start-Process -FilePath $helperExe -ArgumentList $all -WorkingDirectory $dir -NoNewWindow -PassThru `
             -RedirectStandardInput (Join-Path $dir "stdin.txt") `
@@ -342,6 +346,53 @@ function Scenario-MenuButtons {
     Game $h "click leave"
     Expect "Stop ends hosting" { HelperLog $h } "You stopped hosting"
     Expect "host menu offers Host and Join again" { GameLog $h } "menu \[host,join\]" 3
+}
+
+function Scenario-LanJoin {
+    # Nobody copies anything: the client's menu offers the game the host announces on the network.
+    $port = Next-Port
+    $h = New-GameDir "host"; $c = New-GameDir "client"
+    Start-Helper $h @("lobby", "--name", "Hosty", "--port", $port, "--no-clipboard") | Out-Null
+    Start-Helper $c @("lobby", "--name", "Clienty", "--port", $port, "--no-clipboard") | Out-Null
+    Expect "client menu offers Host and Join" { GameLog $c } "menu \[host,join\] Multiplayer - playing as Clienty"
+    Game $h "click host"
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    $pattern = "menu \[host,join,(lan:[\d.]+:$port)\]"
+    Expect "client menu offers the host's game" { GameLog $c } $pattern
+    Expect "the helper's window names it too" { HelperLog $c } "Hosty is hosting on your network. To join, press Join Hosty on the main menu, or type .join [\d.]+:$port"
+    $id = [regex]::Match((GameLog $c), $pattern).Groups[1].Value
+    Game $c "click $id"
+    Expect "client joined by the button" { GameLog $c } "menu \[leave\] Joined Hosty \| Waiting for the host to open a city"
+    Expect "host counts the friend" { GameLog $h } "menu \[leave\] Hosting for 1 friend"
+    Expect "the address is remembered" { Read-Shared (Join-Path $c "multiplayer\settings.json") } ([regex]::Escape($id.Substring(4)))
+    # Back in the lobby the button is there again while the host keeps hosting, and goes once it stops.
+    Game $c "click leave"
+    Expect "client back in the lobby with the button" { GameLog $c } $pattern 2
+    $plain = [regex]::Matches((GameLog $c), "menu \[host,join\] ").Count
+    Game $h "click leave"
+    Expect "Stop ends hosting" { HelperLog $h } "You stopped hosting"
+    Expect "the button goes when the host stops" { GameLog $c } "menu \[host,join\] " ($plain + 1) 15
+    # The host heard its own announcements too, and never offered them.
+    if ((GameLog $h) -match "lan:") { throw "the host's menu showed its own game" }
+}
+
+function Scenario-LanBlocked {
+    # Another program holds the discovery port without sharing it: the helper still hosts and joins.
+    $port = Next-Port
+    $udp = New-Object Net.Sockets.Socket([Net.Sockets.AddressFamily]::InterNetwork, [Net.Sockets.SocketType]::Dgram, [Net.Sockets.ProtocolType]::Udp)
+    $udp.ExclusiveAddressUse = $true
+    $udp.Bind((New-Object Net.IPEndPoint([Net.IPAddress]::Any, $script:lanPort)))
+    try {
+        $s = Start-LobbyPair $port
+        Expect "can't listen, logged" { HelperLog $s.c } "LAN discovery: can't listen on UDP port $($script:lanPort)"
+        Helper $s.h "host"
+        Expect "host listens" { HelperLog $s.h } "Hosting on port $port"
+        Game $s.h "level"
+        Expect "host city loaded" { HelperLog $s.h } "City loaded"
+        Join-Lobby $s $port
+    } finally {
+        $udp.Close()
+    }
 }
 
 function Scenario-LuaMenu {
@@ -745,7 +796,7 @@ function Scenario-MoneyHostPaused {
 $scenarios = @("HelperUnits", "LuaSync",
     "HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
     "NoModeIsLobby", "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
-    "MenuButtons", "LuaMenu",
+    "MenuButtons", "LanJoin", "LanBlocked", "LuaMenu",
     "ClientBuildAccepted", "PlaytestLog", "NoShareLog", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused",
     "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",

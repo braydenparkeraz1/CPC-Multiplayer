@@ -16,7 +16,8 @@ end
 
 -- A main menu: its entity and a 1920x1080 screen (newWorld adds the camera).
 local function newMenu()
-    local w = { entities = {}, nextId = 1, updates = {}, clicks = {}, emitted = {}, cursor = { x = 0, y = 0 } }
+    local w = { entities = {}, nextId = 1, updates = {}, clicks = {}, emitted = {}, cursor = { x = 0, y = 0 },
+        screen = { x = 1920, y = 1080 } }
     local function component(name)
         return { getFor = function(e) return w.entities[e] and w.entities[e].comps[name] end }
     end
@@ -46,7 +47,7 @@ local function newMenu()
     env.vec3 = function(x, y, z) return { x = x, y = y or x, z = z or x } end
     env.quat = { new = function() return {} end }
     env.loadModels = function() end
-    env.getScreenSize = function() return { x = 1920, y = 1080 } end
+    env.getScreenSize = function() return w.screen end
     env.getCursorPos = function() return w.cursor end
     env.component = setmetatable({}, { __index = function(_, name) return component(name) end })
     env.setUpdateFunction = function(e, interval, fn) w.updates[#w.updates + 1] = fn end
@@ -188,6 +189,46 @@ test("a menu that arrives before the camera exists shows once it does", function
     w:addCamera()
     w:frame()
     eq(w:count("H_Text"), 2, "shown on the next frame")
+end)
+
+test("a row too wide for the screen is drawn smaller, and its buttons still work", function()
+    -- A 720p window with Host, Join and two games found on the network (the longest labels the
+    -- helper makes): 38 letters and three gaps would be 33.3 units, the screen is 21.1 wide.
+    local w = newWorld()
+    w.screen = { x = 1280, y = 720 }
+    w:boot()
+    w.MP.handlers.menu({ lines = {}, buttons = { { id = "host", label = "Host" }, { id = "join", label = "Join" },
+        { id = "lan:192.168.1.20:27777", label = "Join ABCDEFGHIJ" }, { id = "lan:10.0.0.5:27777", label = "Join KLMNOPQRST" } } })
+    local px = 360 / (85 * math.tan(math.rad(4)))
+    local function at(x, y) return 640 + x * px, 360 - y * px end
+    local first, last = w.MP.menu.buttons[1], w.MP.menu.buttons[4]
+    local left = at(first.x0, 0)
+    local right = at(last.x1, 0)
+    eq(left > 0 and right < 1280, true, "row inside the screen")
+    eq(math.abs((640 - left) - (right - 640)) < 1, true, "row centred")
+    local top = select(2, at(0, first.y1))
+    local bottom = select(2, at(0, first.y0))
+    -- Same baseline as a full-size row, so it stays clear of the engine's panel below.
+    eq(math.abs(bottom - select(2, at(0, -1.75))) < 1e-6, true, "baseline kept")
+    eq(bottom - top < 0.73 * px and bottom - top > 0.4 * 0.73 * px, true, "smaller, not tiny")
+    local lx, ly = at((last.x0 + last.x1) / 2, (last.y0 + last.y1) / 2)
+    w:click(lx, ly)
+    local hx, hy = at((first.x0 + first.x1) / 2, (first.y0 + first.y1) / 2)
+    w:click(hx, hy)
+    eq(#w.emitted, 2, "clicks sent")
+    eq(w.emitted[1].d.click, "lan:10.0.0.5:27777", "found game")
+    eq(w.emitted[2].d.click, "host", "host")
+end)
+
+test("a row that fits keeps its full size", function()
+    local w = newWorld()
+    w.screen = { x = 1280, y = 720 }
+    w:boot()
+    w.MP.handlers.menu({ lines = {}, buttons = { { id = "host", label = "Host" }, { id = "join", label = "Join" },
+        { id = "lan:192.168.1.20:27777", label = "Join Hosty" } } })
+    local b = w.MP.menu.buttons[1]
+    eq(math.abs(b.y1 - b.y0 - 0.73) < 1e-9, true, "full height")
+    eq(math.abs(w.MP.menu.buttons[2].x0 - b.x1 - 1.6) < 1e-9, true, "full gap")
 end)
 
 for _, t in ipairs(tests) do

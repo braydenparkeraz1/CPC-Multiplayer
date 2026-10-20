@@ -3,13 +3,16 @@
 `run.ps1` runs everything; build first with `build.ps1`. There are three kinds of tests:
 
 - **Helper unit tests** (`HelperTests.cs`, scenario `HelperUnits`): the helper's sync logic on its own: build events,
-  the host's change log, pending tile edits, drift decisions, area hashes and repairs of the tile map.
+  the host's change log, pending tile edits, drift decisions, area hashes and repairs of the tile map; invites; the LAN
+  announcement's format and parsing, which hosts the lobby keeps (own, other versions, expiry, one per host), button
+  labels and broadcast addresses.
 - **Lua tests** (`lua/sync_test.lua` with the stand-in engine `lua/engine.lua`, scenario `LuaSync`): the mod's
   `lua/hooks.lua` and `lua/sync.lua` running on Lua 5.4 (`LuaRunner.cs`, a minimal `lua.exe`) against a fake
   entity/component world: reporting builds, replaying friends' builds, retries, undo, digests and repairs, and two
   "PCs" racing for one tile. Run them alone with `.testrun\bin\luarun\luarun.exe tests\lua\sync_test.lua`.
   `lua/menu_test.lua` (scenario `LuaMenu`) does the same for `lua/menu.lua`, the main menu's buttons, with its own small
-  stand-in for the engine: letters and shadows, clicks and hovering by cursor position, a menu sent before the camera exists.
+  stand-in for the engine: letters and shadows, clicks and hovering by cursor position, a menu sent before the camera exists,
+  and a row of four buttons too wide for a 720p screen drawn smaller, on the same baseline, with its buttons still clickable.
 - **Scenarios** with the stand-in game: `FakeGame.cs` builds a `carparkcapital.exe` that does what the mod's Lua side
   does at the helper's end: it reads the inbox file, acks messages, prints `MP>` lines, "loads" a city on `loadworld`,
   exits on `leave`, keeps a set of object keys (confirming or blocking friends' builds, digest, dump, reconcile).
@@ -26,7 +29,8 @@ powershell -ExecutionPolicy Bypass -File tests\run.ps1 [-Only LobbyHostLeaves,Ho
 ```
 
 `run.ps1` sets up `.testrun\t\host` and `.testrun\t\client` as below. It starts both helpers with
-`--allow-second-instance --control <dir>\helper-control.txt`; stdin is an empty file, so nothing waits on a prompt. It drives
+`--allow-second-instance --control <dir>\helper-control.txt --lan-port <port base + 1000>`, so games announced on the real
+network (UDP 27778) don't show up in the tests, and a test run with another port base doesn't see this one's; stdin is an empty file, so nothing waits on a prompt. It drives
 the helpers and fake games through their control files and checks the helper and fake-game logs. Everything it starts is
 closed afterwards. A failed scenario's folders are copied to `.testrun\failed-<scenario>`.
 
@@ -51,7 +55,7 @@ CPC-Multiplayer.exe join 127.0.0.1:27877 --game <client> --name Clienty --allow-
 Drive a fake game by writing one command to `control.txt` in its folder:
 `level` (load a city and autosave it), `menu`, `save`, `exit`, `build <key> [cost]` / `demolish <key> [refund]` (the player
 builds or demolishes), `sneak <key>` / `drop <key>` (an object appears or vanishes without being reported, to make the cities
-drift), `click <id>` (the player clicked a main menu button: `host`, `join`, `leave`), and the price and money commands
+drift), `click <id>` (the player clicked a main menu button: `host`, `join`, `leave`, or a found game's `lan:<ip>:<port>`), and the price and money commands
 below. The fake game logs what the main menu shows as `menu [<button ids>] <line> | <line>`.
 Drive a helper the same way through the file given with `--control`: one command per line, as you'd type them
 (`host`, `join <addr>`, `leave`, `say <text>`, `status`, `quit`, ...).
@@ -84,6 +88,8 @@ Each starts both helpers with `lobby`, so the games start before anyone picks ho
 | LobbyHostQuits | Host `quit`: the client game restarts in the lobby and the client helper keeps running. The client game exiting then ends the helper |
 | LobbyHostGoneBeforeCity | The host leaves before loading a city: the client goes back to the lobby without its game being closed |
 | MenuButtons | The main menu shows Host and Join and what Join will use. Join with no address explains; Host hosts and shows the invite and Stop; the client's Join reaches its last host and shows "Joined Hosty"; the host's menu counts the friend; Stop ends hosting. Run with `--no-clipboard` |
+| LanJoin | No copying: the host presses Host, and within seconds the client's menu has a `lan:<ip>:<port>` button and its window names the game; clicking it joins Hosty and the address is remembered. Back in the lobby the button is there again; after the host's Stop it goes within 15 s. The host never offers its own game |
+| LanBlocked | Another program holds the discovery port exclusively: the helpers log that they can't listen, and hosting and joining work as before |
 | LuaMenu | `lua/menu.lua` against its stand-in engine (see Lua tests above) |
 
 HostJoin (which includes the host going to the menu), HostQuit, HostKilled and IgnoreLeave cover the 0.3.0 table.

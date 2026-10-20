@@ -25,6 +25,7 @@ namespace CpcMultiplayer;
 //   Session.Drift.cs     comparing everyone's city with the host's and repairing differences
 //   Session.Prices.cs    prices and other player-set values, the host's table being the truth
 //   Session.Money.cs     one wallet (the host's): reading and writing it, friends' spends
+//   Session.Lan.cs       announcing our game on the network, and finding others' for the menu
 //   Session.Commands.cs  console and control-file commands
 //   Session.Log.cs       the playtest log: snapshots of all of the above, players' notes
 internal partial class Session
@@ -148,6 +149,7 @@ internal partial class Session
 		}
 		inbox.Flush();
 		ShowErrorsOnMenu();
+		StartLan();
 		game.Line += line => Post(() => OnGameLine(line));
 		game.Exited += () => Post(OnGameExited);
 		Ui.Step("Starting Car Park Capital...");
@@ -224,6 +226,7 @@ internal partial class Session
 			ExpireUnconfirmed();
 		}
 		KeepAlive();
+		LanTick();
 		try
 		{
 			SettingsTick();
@@ -389,6 +392,7 @@ internal partial class Session
 		{
 			SayBye();
 		}
+		StopLan();
 		work.CompleteAdding();
 		listener?.Stop();
 		foreach (Peer peer in peers.ToArray())
