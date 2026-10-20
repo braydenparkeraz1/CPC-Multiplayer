@@ -132,12 +132,14 @@ internal partial class Session
 		{
 			Ui.Log("local tile changes: " + changes.Count);
 			ShareLocalTiles(changes);
+			ChargeTiles(changes);
 		}
 		List<KeyValuePair<int, byte>> landChanges = tiles.PollLand();
 		if (landChanges.Count > 0)
 		{
 			Ui.Log("local land changes: " + landChanges.Count);
 			ShareLocalLand(landChanges);
+			ChargeLand(landChanges);
 		}
 		if (landToApply.Count > 0 && tiles.LandActive)
 		{

@@ -23,6 +23,8 @@ namespace CpcMultiplayer;
 //   Session.Client.cs    joining: the connection to the host, loading the host's city
 //   Session.Tiles.cs     roads, floors and land (read and written in the game's memory)
 //   Session.Drift.cs     comparing everyone's city with the host's and repairing differences
+//   Session.Prices.cs    prices and other player-set values, the host's table being the truth
+//   Session.Money.cs     one wallet (the host's): reading and writing it, friends' spends
 //   Session.Commands.cs  console and control-file commands
 internal partial class Session
 {
@@ -139,6 +141,11 @@ internal partial class Session
 		{
 			StartBackground(ReadControlFile);
 		}
+		if (opts.Dev)
+		{
+			StartBackground(ReadDevCommands);
+			Ui.Warn("Developer console on: Lua in " + DevPath("devcmd.txt") + " runs in the game.");
+		}
 		if (role != Role.Lobby)
 		{
 			// In the lobby the help comes with the main-menu hint, once the game is up.
@@ -196,6 +203,22 @@ internal partial class Session
 			ExpireUnconfirmed();
 		}
 		KeepAlive();
+		try
+		{
+			SettingsTick();
+		}
+		catch (Exception ex)
+		{
+			Ui.Log("settings sync error: " + ex);
+		}
+		try
+		{
+			MoneyTick();
+		}
+		catch (Exception ex)
+		{
+			Ui.Log("money sync error: " + ex);
+		}
 		TileTick();
 		DriftTick();
 		UpdatePauseHint();
@@ -272,6 +295,9 @@ internal partial class Session
 		pendingTiles.Clear();
 		pendingLand.Clear();
 		unconfirmed.Clear();
+		settingsToGame.Clear();
+		settingsSentAt.Clear();
+		ClearClientMoney();
 		ResetDrift();
 	}
 

@@ -113,12 +113,16 @@ local function index(e, key)
     S.scanList[#S.scanList + 1] = e
     -- The same object vanishing and coming straight back (the game re-creating it) is not a removal.
     S.pendingRemovals[key] = nil
+    if MP.onIndexed then MP.onIndexed(e, key) end
 end
 
 local function unindex(e)
     local key = S.known[e]
     S.known[e] = nil
-    if key and S.byKey[key] == e then S.byKey[key] = nil end
+    if key and S.byKey[key] == e then
+        S.byKey[key] = nil
+        if MP.onUnindexed then MP.onUnindexed(key) end
+    end
     return key
 end
 
@@ -395,6 +399,14 @@ function MP.onTick()
     scanKnown()
     flushPending()
     runPaints()
+    if MP.settingsTick then
+        local ok, err = pcall(MP.settingsTick)
+        if not ok then MP.log("settings error: " .. tostring(err)) end
+    end
+    if MP.moneyTick then
+        local ok, err = pcall(MP.moneyTick)
+        if not ok then MP.log("money error: " .. tostring(err)) end
+    end
     if not S.readyAnnounced and S.tick >= S.readyTick then
         S.readyAnnounced = true
         local count = 0

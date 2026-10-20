@@ -1,24 +1,35 @@
 // Stand-in for carparkcapital.exe that behaves like the mod's Lua side, for testing the helper
 // without the game: it reads multiplayer/runtime/inbox_<session>.lua, acks messages, and prints
 // the same MP> lines (room, ready, hb, ack, hello, place, placed, blocked, digest, keys, reconciled)
-// the mod prints. Its city is just a set of object keys; the digest is computed like lua/sync.lua's.
+// the mod prints, plus setting, settings and moneymark. Its city is just a set of object keys; the
+// digest is computed like lua/sync.lua's.
 //
 // Driven by a control.txt file in the game folder (one command, deleted after reading):
 //   level           load a city (3 objects; writes saves/HostCity.cpcp like an autosave)
 //   menu            go back to the main menu
 //   save            save the city again
 //   exit            close the game
-//   build <key>     our player builds an object (reported as "place")
-//   demolish <key>  our player demolishes one (reported as "demolish")
+//   build <key> [cost]        our player builds an object (reported as "place"); we pay cost ("place" works too)
+//   demolish <key> [refund]   our player demolishes one (reported as "demolish"); we get refund back
 //   sneak <key>     an object appears without being reported (drift, for repair tests)
 //   drop <key>      an object disappears without being reported
+//   price <key> <value>   the player set a parking price (prints a "setting" line)
+//   pause / resume        stop / start reading the inbox, like the real game while paused
+//   dump                  log every price as "price <key>=<value>", and "money=<value>"
+//   money <value>         set the city's money (income or upkeep of our own simulation)
+// The money lives in native memory like the game's, so the helper has to find it by scanning this
+// process (inbox "moneymark") and reads or writes it there. Inbox "spend" charges it.
 // Environment: FAKEGAME_IGNORE_LEAVE=1 ignores "leave" (tests the helper's force-close);
 // FAKEGAME_BLOCK=<key> makes a friend's build of that key not fit (reported "blocked").
-// fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "place Bench@1,1,1/0/0".
+// fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "place Bench@1,1,1/0/0",
+// "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37", "stale ParkingEntrance@1,8,1/0/0=0.2".
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -48,6 +59,168 @@ internal static class FakeGame
 	private static long lastId;
 
 	private static readonly HashSet<string> objects = new HashSet<string>();
+
+	private static bool paused;
+
+	// key -> parking price, like ParkingEntry.ratePerMinute on the city's entrances.
+	private static readonly Dictionary<string, double> prices = new Dictionary<string, double>();
+
+	private const string PriceField = "ParkingEntry.ratePerMinute";
+
+	// Like lua/settings.lua: our edits are numbered, and an inbox value the helper wrote before it had
+	// our latest edit of that price ("seen" lower than the edit's seq) is skipped.
+	private static long settingSeq;
+
+	private static readonly Dictionary<string, long> protect = new Dictionary<string, long>();
+
+	// The balance, a copy refreshed from it every tick (like the HUD's), and a value that moves with
+	// every transaction but ignores writes to the balance (like the statistic that matched in game).
+	private static readonly IntPtr balanceMem = Marshal.AllocHGlobal(64);
+
+	private static readonly IntPtr displayMem = Marshal.AllocHGlobal(64);
+
+	private static readonly IntPtr statMem = Marshal.AllocHGlobal(64);
+
+	private const double StartMoney = 60000.25;
+
+	private static long markId;
+
+	private static double markAmount;
+
+	private static int markUndoAt = -1;
+
+	private static double Get(IntPtr p)
+	{
+		return BitConverter.Int64BitsToDouble(Marshal.ReadInt64(p));
+	}
+
+	private static void Set(IntPtr p, double v)
+	{
+		Marshal.WriteInt64(p, BitConverter.DoubleToInt64Bits(v));
+	}
+
+	private static void Transact(double amount)
+	{
+		Set(balanceMem, Get(balanceMem) + amount);
+		Set(statMem, Get(statMem) + amount);
+	}
+
+	private static void SetMoney(double v)
+	{
+		Set(balanceMem, v);
+		Set(displayMem, v);
+		Set(statMem, v + 2.75);
+	}
+
+	private static byte[] CborText(string s)
+	{
+		byte[] b = Encoding.UTF8.GetBytes(s);
+		byte[] r = new byte[b.Length + 1];
+		r[0] = (byte)(0x60 + b.Length);
+		Buffer.BlockCopy(b, 0, r, 1, b.Length);
+		return r;
+	}
+
+	// zlib( u64 cborLength | CBOR {"rooms":[{"money":{"balance":X}}]} | u64 0 ), the game's save layout.
+	private static byte[] SaveBytes(double balance)
+	{
+		MemoryStream cbor = new MemoryStream();
+		cbor.WriteByte(0xA1);
+		cbor.Write(CborText("rooms"), 0, 6);
+		cbor.WriteByte(0x81);
+		cbor.WriteByte(0xA1);
+		cbor.Write(CborText("money"), 0, 6);
+		cbor.WriteByte(0xA1);
+		cbor.Write(CborText("balance"), 0, 8);
+		cbor.WriteByte(0xFB);
+		byte[] bits = BitConverter.GetBytes(balance);
+		Array.Reverse(bits);
+		cbor.Write(bits, 0, 8);
+		MemoryStream raw = new MemoryStream();
+		raw.Write(BitConverter.GetBytes(cbor.Length), 0, 8);
+		raw.Write(cbor.ToArray(), 0, (int)cbor.Length);
+		raw.Write(BitConverter.GetBytes(0L), 0, 8);
+		byte[] data = raw.ToArray();
+		MemoryStream file = new MemoryStream();
+		file.WriteByte(0x78);
+		file.WriteByte(0x9C);
+		using (DeflateStream deflate = new DeflateStream(file, CompressionMode.Compress, leaveOpen: true))
+		{
+			deflate.Write(data, 0, data.Length);
+		}
+		uint a = 1, b = 0;
+		foreach (byte x in data)
+		{
+			a = (a + x) % 65521;
+			b = (b + a) % 65521;
+		}
+		uint adler = (b << 16) | a;
+		file.WriteByte((byte)(adler >> 24));
+		file.WriteByte((byte)(adler >> 16));
+		file.WriteByte((byte)(adler >> 8));
+		file.WriteByte((byte)adler);
+		return file.ToArray();
+	}
+
+	private static double? SaveBalance(string path)
+	{
+		try
+		{
+			using (FileStream f = File.OpenRead(path))
+			{
+				f.ReadByte();
+				f.ReadByte();
+				using (DeflateStream inflate = new DeflateStream(f, CompressionMode.Decompress))
+				{
+					MemoryStream all = new MemoryStream();
+					inflate.CopyTo(all);
+					byte[] d = all.ToArray();
+					byte[] key = CborText("balance");
+					for (int i = 0; i + key.Length + 9 <= d.Length; i++)
+					{
+						int k = 0;
+						while (k < key.Length && d[i + k] == key[k])
+						{
+							k++;
+						}
+						if (k == key.Length && d[i + k] == 0xFB)
+						{
+							byte[] bits = new byte[8];
+							Array.Copy(d, i + k + 1, bits, 0, 8);
+							Array.Reverse(bits);
+							return BitConverter.ToDouble(bits, 0);
+						}
+					}
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			Log("save unreadable: " + ex.Message);
+		}
+		return null;
+	}
+
+	private static double NumField(string text, string name)
+	{
+		Match m = Regex.Match(text, "\\[\"" + name + "\"\\]=(-?[0-9.Ee+]+)");
+		return m.Success ? double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : 0.0;
+	}
+
+	private static string Num(double v)
+	{
+		return v.ToString("R", CultureInfo.InvariantCulture);
+	}
+
+	private static string Entry(string key, double v)
+	{
+		return "{\"key\":\"" + key + "\",\"fields\":{\"" + PriceField + "\":" + Num(v) + "}}";
+	}
+
+	private static string Setting(string key, double v, long seq)
+	{
+		return "{\"key\":\"" + key + "\",\"fields\":{\"" + PriceField + "\":" + Num(v) + "},\"seq\":" + seq + "}";
+	}
 
 	private static void Emit(string t, string d)
 	{
@@ -129,12 +302,44 @@ internal static class FakeGame
 			saveIn = 0;
 			break;
 		case "build":
-			objects.Add(arg);
-			Emit("place", PlaceFields(arg));
+		case "place":
+		{
+			string[] words = arg.Split(' ');
+			objects.Add(words[0]);
+			Transact(-Amount(words));
+			Emit("place", PlaceFields(words[0]));
 			break;
+		}
 		case "demolish":
-			objects.Remove(arg);
-			Emit("demolish", "{\"key\":" + Json(arg) + "}");
+		{
+			string[] words = arg.Split(' ');
+			objects.Remove(words[0]);
+			Transact(Amount(words));
+			Emit("demolish", "{\"key\":" + Json(words[0]) + "}");
+			break;
+		}
+		case "pause":
+		case "resume":
+			paused = parts[0] == "pause";
+			break;
+		case "price":
+		{
+			string[] words = arg.Split(' ');
+			double v = double.Parse(words[1], CultureInfo.InvariantCulture);
+			prices[words[0]] = v;
+			protect[words[0]] = ++settingSeq;
+			Emit("setting", Setting(words[0], v, settingSeq));
+			break;
+		}
+		case "dump":
+			foreach (KeyValuePair<string, double> kv in prices)
+			{
+				Log("price " + kv.Key + "=" + Num(kv.Value));
+			}
+			Log("money=" + Num(Get(balanceMem)));
+			break;
+		case "money":
+			SetMoney(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
 		case "sneak":
 			objects.Add(arg);
@@ -143,6 +348,12 @@ internal static class FakeGame
 			objects.Remove(arg);
 			break;
 		}
+	}
+
+	// "<key> <amount>" from a control command; no amount is free.
+	private static double Amount(string[] words)
+	{
+		return words.Length > 1 ? double.Parse(words[1], CultureInfo.InvariantCulture) : 0.0;
 	}
 
 	// A string or number field of an inbox message written by the helper's Lua.Write: ["name"]=value.
@@ -169,7 +380,41 @@ internal static class FakeGame
 		{
 			string path = Field(rest, "path");
 			Log("loading " + path + (File.Exists(path) ? " (exists)" : " (MISSING)"));
+			double? saved = File.Exists(path) ? SaveBalance(path) : null;
+			if (saved != null)
+			{
+				SetMoney(saved.Value);
+			}
 			EnterRoom("level");
+			break;
+		}
+		case "settings?":
+		{
+			Log("settings? answered " + prices.Count);
+			List<string> entries = prices.Select(kv => Entry(kv.Key, kv.Value)).ToList();
+			Emit("settings", "{\"entries\":[" + string.Join(",", entries) + "],\"full\":true}");
+			break;
+		}
+		case "settings":
+			ApplySettings(rest);
+			break;
+		case "moneymark":
+			if (markUndoAt >= 0)
+			{
+				Transact(-markAmount);
+			}
+			markId = (long)NumField(rest, "mark");
+			markAmount = NumField(rest, "amount");
+			Transact(markAmount);
+			markUndoAt = tick + 5;
+			Emit("moneymark", "{\"mark\":" + markId + ",\"step\":1}");
+			break;
+		case "spend":
+		{
+			double spent = NumField(rest, "spent");
+			double refunded = NumField(rest, "refunded");
+			Transact(refunded - spent);
+			Log("spend spent=" + Num(spent) + " refunded=" + Num(refunded));
 			break;
 		}
 		case "leave":
@@ -232,6 +477,31 @@ internal static class FakeGame
 		return true;
 	}
 
+	// {["key"]="...",["fields"]={["ParkingEntry.ratePerMinute"]=0.37,},}
+	private static void ApplySettings(string rest)
+	{
+		Match seenMatch = Regex.Match(rest, "\\[\"seen\"\\]=(\\d+)");
+		long seen = seenMatch.Success ? long.Parse(seenMatch.Groups[1].Value) : 0;
+		foreach (Match e in Regex.Matches(rest, "\\[\"key\"\\]=\"([^\"]+)\",\\[\"fields\"\\]=\\{\\[\"" + Regex.Escape(PriceField) + "\"\\]=([-0-9.Ee+]+)"))
+		{
+			string key = e.Groups[1].Value;
+			double v = double.Parse(e.Groups[2].Value, CultureInfo.InvariantCulture);
+			if (protect.TryGetValue(key, out long mine) && seen < mine)
+			{
+				Log("stale " + key + "=" + Num(v));
+			}
+			else if (!prices.TryGetValue(key, out double old) || Math.Abs(old - v) > 1e-9)
+			{
+				prices[key] = v;
+				Log("applied " + key + " " + PriceField + "=" + Num(v));
+			}
+		}
+		foreach (string key in protect.Where(kv => kv.Value <= seen).Select(kv => kv.Key).ToList())
+		{
+			protect.Remove(key);
+		}
+	}
+
 	private static int Main(string[] args)
 	{
 		for (int i = 0; i + 1 < args.Length; i++)
@@ -244,7 +514,8 @@ internal static class FakeGame
 		bool ignoreLeave = Environment.GetEnvironmentVariable("FAKEGAME_IGNORE_LEAVE") == "1";
 		string blockKey = Environment.GetEnvironmentVariable("FAKEGAME_BLOCK");
 		string inboxPath = Path.Combine("multiplayer", "runtime", "inbox_" + session + ".lua");
-		Log("started");
+		SetMoney(StartMoney);
+		Log("started; money at " + balanceMem.ToString("x") + ", copy at " + displayMem.ToString("x") + ", statistic at " + statMem.ToString("x"));
 		EnterRoom("menu");
 		while (true)
 		{
@@ -265,7 +536,7 @@ internal static class FakeGame
 			if (saveIn >= 0 && saveIn-- == 0)
 			{
 				Directory.CreateDirectory("saves");
-				File.WriteAllBytes(Path.Combine("saves", "HostCity.cpcp"), new byte[2048]);
+				File.WriteAllBytes(Path.Combine("saves", "HostCity.cpcp"), SaveBytes(Get(balanceMem)));
 				Log("saved");
 			}
 			if (readyIn >= 0 && readyIn-- == 0)
@@ -280,11 +551,23 @@ internal static class FakeGame
 			}
 			if (context == "level" && tick % 10 == 0)
 			{
-				Emit("hb", "{\"tick\":" + tick + ",\"paused\":false}");
+				Emit("hb", "{\"tick\":" + tick + ",\"paused\":" + (paused ? "true" : "false") + "}");
+			}
+			// The HUD redraws even while paused.
+			Set(displayMem, Get(balanceMem));
+			if (paused)
+			{
+				continue;
 			}
 			if (ready && tick % 20 == 0)
 			{
 				EmitDigest();
+			}
+			if (markUndoAt >= 0 && tick >= markUndoAt)
+			{
+				markUndoAt = -1;
+				Transact(-markAmount);
+				Emit("moneymark", "{\"mark\":" + markId + ",\"step\":2}");
 			}
 			string text;
 			try
@@ -299,7 +582,7 @@ internal static class FakeGame
 			{
 				continue;
 			}
-			foreach (Match m in Regex.Matches(text, "\\[\"id\"\\]=(\\d+),\\[\"type\"\\]=\"(\\w+)\"([^\\n]*)"))
+			foreach (Match m in Regex.Matches(text, "\\[\"id\"\\]=(\\d+),\\[\"type\"\\]=\"([\\w?]+)\"([^\\n]*)"))
 			{
 				long id = long.Parse(m.Groups[1].Value);
 				if (id <= lastId)

@@ -539,13 +539,17 @@ internal class TileSync : IDisposable
 							int index = j / 2;
 							if (!inFlight.Contains(index))
 							{
+								byte oldShape = seen[j];
+								byte oldMat = seen[j + 1];
 								seen[j] = now[j];
 								seen[j + 1] = now[j + 1];
 								changes.Add(new TileChange
 								{
 									Index = index,
 									Shape = now[j],
-									Mat = now[j + 1]
+									Mat = now[j + 1],
+									OldShape = oldShape,
+									OldMat = oldMat
 								});
 							}
 						}

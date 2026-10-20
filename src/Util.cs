@@ -73,6 +73,28 @@ internal static class Util
 		return null;
 	}
 
+	// A JSON number of any kind (the serializer gives int, long or decimal).
+	public static double? Double(Dictionary<string, object> d, string key)
+	{
+		if (d == null || !d.TryGetValue(key, out var value))
+		{
+			return null;
+		}
+		double? v = value switch
+		{
+			int i => i,
+			long l => l,
+			decimal m => (double)m,
+			double x => x,
+			_ => null,
+		};
+		if (v == null || double.IsNaN(v.Value) || double.IsInfinity(v.Value))
+		{
+			return null;
+		}
+		return v;
+	}
+
 	// Moves tmp over target, retrying for a while if the game has target open.
 	public static void ReplaceFile(string tmp, string target)
 	{

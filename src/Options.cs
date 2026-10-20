@@ -21,6 +21,9 @@ internal class Options
 	// A file the helper polls for commands (one per line, deleted after reading), like typing them.
 	public string ControlFile;
 
+	// Developer console: Lua in multiplayer/runtime/devcmd.txt is run in the game, results go to devout.txt.
+	public bool Dev;
+
 	public static Options Parse(string[] args)
 	{
 		Options options = new Options();
@@ -76,6 +79,9 @@ internal class Options
 				break;
 			case "--allow-second-instance":
 				options.AllowSecondInstance = true;
+				break;
+			case "--dev":
+				options.Dev = true;
 				break;
 			default:
 				Ui.Warn("Ignoring unknown argument: " + arg);

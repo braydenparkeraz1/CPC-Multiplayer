@@ -35,6 +35,8 @@ function New-GameDir([string]$name) {
     Set-Content (Join-Path $dir "assets\scripts\entities\3d\MainMenu.lua") "function create(menu)`r`n    setName(menu, `"Menu`")`r`nend"
     Set-Content (Join-Path $dir "assets\scripts\entities\simulation\GlobalStorage.lua") "function create(entity)`r`n    setName(entity, `"Global Storage Entity`")`r`nend"
     Set-Content (Join-Path $dir "assets\scripts\entities\simulation\_catalogue.lua") "-- catalogue"
+    # A template for the helper's price table: builds cost 50, demolishing gives 25 back.
+    Set-Content (Join-Path $dir "assets\scripts\entities\simulation\TestFlag.lua") "PlaceableTemplateInfo {`r`n    buildPrice = 50,`r`n}"
     Copy-Item $fakeExe $dir
     Set-Content (Join-Path $dir "stdin.txt") ""
     return $dir
@@ -323,6 +325,7 @@ function Start-HostAndClient([hashtable]$hostEnv = @{}) {
     Expect "host listens" { HelperLog $h } "Hosting on port $port"
     Game $h "level"
     Expect "host city loaded" { HelperLog $h } "City loaded"
+    Expect "host asks its game for prices" { GameLog $h } "settings\? answered"
     Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty") | Out-Null
     Expect "client in host's city" { HelperLog $c } "You're in the host's city"
     return @{ h = $h; c = $c; port = $port }
@@ -432,10 +435,217 @@ function Scenario-OldHostRefused {
     }
 }
 
+# ---- 0.4.0 prices and other player-set values ----
+
+$K1 = "ParkingEntrance@10,8,20/0/0"
+$K2 = "ParkingEntrance@12,8,20/0/0"
+
+function Applied([string]$key, [string]$value) { return [regex]::Escape("applied $key ParkingEntry.ratePerMinute=$value") }
+
+function Scenario-PriceHostToClient {
+    $s = Start-HostAndClient
+    Game $s.h "price $K1 0.37"
+    Expect "client game gets the host's price" { GameLog $s.c } (Applied $K1 "0.37") 1 10
+}
+
+function Scenario-PriceClientToHost {
+    $s = Start-HostAndClient
+    Game $s.c "price $K1 0.5"
+    Expect "host game gets the client's price" { GameLog $s.h } (Applied $K1 "0.5") 1 10
+    # The host's next broadcast carries it back; the client has it already, so nothing changes there.
+    Start-Sleep -Seconds 3
+    if ((GameLog $s.c) -match [regex]::Escape("applied $K1")) { throw "client re-applied its own price" }
+    Write-Host "    ok: no echo on the client"
+}
+
+function Scenario-PriceOnJoin {
+    $h = New-GameDir "host"; $c = New-GameDir "client"; $port = Next-Port
+    Start-Helper $h @("host", "--name", "Hosty", "--port", $port) | Out-Null
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    Game $h "level"
+    Expect "host city loaded" { HelperLog $h } "City loaded"
+    Game $h "price $K1 0.2"
+    Start-Sleep -Seconds 1
+    Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty") | Out-Null
+    Expect "client in host's city" { HelperLog $c } "You're in the host's city"
+    Expect "client gets the current prices on joining" { GameLog $c } (Applied $K1 "0.2") 1 10
+}
+
+function Scenario-PriceCoalesce {
+    $s = Start-HostAndClient
+    Game $s.c "pause"
+    foreach ($v in "0.1", "0.2", "0.3", "0.4") { Game $s.h "price $K1 $v"; Start-Sleep -Milliseconds 2500 }
+    $inbox = Get-ChildItem (Join-Path $s.c "multiplayer\runtime") -Filter "inbox_*.lua" | Select-Object -First 1
+    $n = [regex]::Matches((Read-Shared $inbox.FullName), '\["type"\]="settings"').Count
+    if ($n -ne 1) { throw "expected 1 pending settings message, found $n" }
+    Write-Host "    ok: one pending settings message while paused"
+    Game $s.c "resume"
+    Expect "client gets the newest price after resuming" { GameLog $s.c } (Applied $K1 "0.4") 1 10
+    if ((GameLog $s.c) -match [regex]::Escape("ratePerMinute=0.1")) { throw "a stale price was applied" }
+    Write-Host "    ok: stale prices skipped"
+}
+
+function Final([string]$key, [string]$value) { return [regex]::Escape("price $key=$value") }
+
+# Both games end with the same price; checked with the fake game's "dump".
+function Expect-Both($s, [string]$key, [string]$value) {
+    Start-Sleep -Seconds 3
+    Game $s.h "dump"; Game $s.c "dump"
+    Expect "host game ends at $value" { GameLog $s.h } (Final $key $value)
+    Expect "client game ends at $value" { GameLog $s.c } (Final $key $value)
+}
+
+function Scenario-PriceBothEdit {
+    # The host edits, then the client edits the same entrance right after: the client's change
+    # reaches the host later, so it wins, and the host's game must not hold on to its own edit.
+    $s = Start-HostAndClient
+    Game $s.h "price $K1 0.2"
+    Start-Sleep -Milliseconds 400
+    Game $s.c "price $K1 0.4"
+    Expect "host game takes the later price" { GameLog $s.h } (Applied $K1 "0.4") 1 10
+    Expect-Both $s $K1 "0.4"
+}
+
+function Scenario-PriceStaleAtHost {
+    # A client's price waits in the paused host game's inbox, then the host edits the same entrance.
+    # The host's edit came later, so the waiting value must never be applied, even when the next
+    # message (for another entrance) is written after the helper knows about the edit.
+    $s = Start-HostAndClient
+    Game $s.h "pause"
+    Game $s.c "price $K1 0.4"
+    Expect "host helper gets the client's price" { HelperLog $s.h } "\[Clienty\] changed ParkingEntrance"
+    Start-Sleep -Milliseconds 500
+    Game $s.h "price $K1 0.2"
+    Start-Sleep -Milliseconds 500
+    Game $s.c "price $K2 0.3"
+    Expect "host helper gets the second price" { HelperLog $s.h } "\[Clienty\] changed ParkingEntrance" 2
+    Start-Sleep -Milliseconds 500
+    Game $s.h "resume"
+    Expect "host game gets the other entrance" { GameLog $s.h } (Applied $K2 "0.3") 1 10
+    if ((GameLog $s.h) -match (Applied $K1 "0.4")) { throw "the host game applied a price older than its own edit" }
+    Write-Host "    ok: the host game kept its own later edit"
+    Expect "client game gets the host's edit" { GameLog $s.c } (Applied $K1 "0.2") 1 10
+    Expect-Both $s $K1 "0.2"
+}
+
+function Scenario-PriceStaleAtClient {
+    # The host's price waits in the paused client game's inbox, then the client edits the same entrance.
+    $s = Start-HostAndClient
+    Game $s.c "pause"
+    Game $s.h "price $K1 0.2"
+    Expect "client helper gets the host's price" { HelperLog $s.c } "host settings: 1\r?\n" 1 10
+    Game $s.c "price $K1 0.4"
+    Expect "host game gets the client's edit" { GameLog $s.h } (Applied $K1 "0.4") 1 10
+    Start-Sleep -Seconds 3
+    Game $s.c "resume"
+    Expect-Both $s $K1 "0.4"
+    if ((GameLog $s.c) -match (Applied $K1 "0.2")) { throw "the client game applied a price older than its own edit" }
+    Write-Host "    ok: the client game kept its own later edit"
+}
+
+$F1 = "TestFlag@10,8,20/0/0"
+$F2 = "TestFlag@12,8,20/0/0"
+
+# Both helpers have found their game's money (scan + marker + nudge, see src/MoneySync.cs).
+function Start-MoneyPair {
+    $s = Start-HostAndClient
+    Expect "host finds its game's money" { HelperLog $s.h } "Shared money: on" 1 40
+    Expect "client finds its game's money" { HelperLog $s.c } "Shared money: on" 1 40
+    return $s
+}
+
+# Polls the fake game's "dump" until its newest money line shows $value.
+function Expect-Money([string]$what, [string]$dir, [string]$value, [int]$timeout = 12) {
+    $deadline = (Get-Date).AddSeconds($timeout)
+    $last = "(none)"
+    while ((Get-Date) -lt $deadline) {
+        Game $dir "dump"
+        Start-Sleep -Milliseconds 400
+        $m = [regex]::Matches((GameLog $dir), "money=([-0-9.E+]+)")
+        if ($m.Count -gt 0) { $last = $m[$m.Count - 1].Groups[1].Value }
+        if ($last -eq $value) { Write-Host "    ok: $what"; return }
+    }
+    throw "timed out waiting for: $what (money $value, last $last)"
+}
+
+function Expect-BothMoney($s, [string]$value) {
+    Expect-Money "host game has $value" $s.h $value
+    Expect-Money "client game has $value" $s.c $value
+}
+
+function Scenario-MoneyFound {
+    # The markers (+500, then -500) leave the money as it was, and the client shows the host's.
+    $s = Start-MoneyPair
+    Expect-BothMoney $s "60000.25"
+}
+
+function Scenario-MoneyHostToClient {
+    $s = Start-MoneyPair
+    Game $s.h "money 12345.5"
+    Expect-Money "client game follows the host's money" $s.c "12345.5"
+}
+
+function Scenario-MoneyClientIncomeIgnored {
+    # The client's own simulation earned something: the host's balance wins.
+    $s = Start-MoneyPair
+    Game $s.c "money 99999"
+    Expect-Money "client game goes back to the host's money" $s.c "60000.25"
+}
+
+function Scenario-MoneyClientBuilds {
+    $s = Start-MoneyPair
+    Game $s.c "place $F1 50"
+    Expect "host game is charged for the client's build" { GameLog $s.h } "spend spent=50 refunded=0"
+    Expect-BothMoney $s "59950.25"
+}
+
+function Scenario-MoneyBothBuild {
+    # Both build at the same moment: both costs come off the one wallet.
+    $s = Start-MoneyPair
+    Game $s.h "place $F2 50"
+    Game $s.c "place $F1 50"
+    Expect-BothMoney $s "59900.25"
+}
+
+function Scenario-MoneyRefund {
+    $s = Start-MoneyPair
+    Game $s.c "place $F1 50"
+    Expect-BothMoney $s "59950.25"
+    Game $s.c "demolish $F1 25"
+    Expect "host game gets the refund" { GameLog $s.h } "spend spent=0 refunded=25"
+    Expect-BothMoney $s "59975.25"
+}
+
+function Scenario-MoneyUnpricedBuild {
+    # No template file for "Mystery": the client is charged what its own game spent, like land plots.
+    $s = Start-MoneyPair
+    Game $s.c "place Mystery@10,8,20/0/0 75"
+    Expect "host game is charged what the client's game spent" { GameLog $s.h } "spend spent=75 refunded=0"
+    Expect-BothMoney $s "59925.25"
+}
+
+function Scenario-MoneyHostPaused {
+    # The host's game is paused, so the client's spend waits there. The client already shows the
+    # cost taken off, and keeps showing it once the host applies it.
+    $s = Start-MoneyPair
+    Game $s.h "pause"
+    Game $s.c "place $F1 50"
+    Expect-Money "client shows the cost before the host applies it" $s.c "59950.25"
+    Start-Sleep -Seconds 3
+    Expect-Money "client still shows it while the host is paused" $s.c "59950.25"
+    Game $s.h "resume"
+    Expect "host game is charged after resuming" { GameLog $s.h } "spend spent=50 refunded=0"
+    Expect-BothMoney $s "59950.25"
+}
+
 $scenarios = @("HelperUnits", "LuaSync",
     "HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
     "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
-    "ClientBuildAccepted", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused")
+    "ClientBuildAccepted", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused",
+    "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
+    "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
+    "MoneyFound", "MoneyHostToClient", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
+    "MoneyUnpricedBuild", "MoneyHostPaused")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }

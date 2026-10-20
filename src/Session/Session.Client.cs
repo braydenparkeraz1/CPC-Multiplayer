@@ -227,6 +227,7 @@ internal partial class Session
 			{
 				Ui.Log("the host placed our " + key);
 			}
+			OnBuildConfirmed(key);
 			break;
 		}
 		case "undo":
@@ -258,6 +259,12 @@ internal partial class Session
 			break;
 		case "area":
 			OnHostArea(m);
+			break;
+		case "settings":
+			OnHostSettings(m);
+			break;
+		case "money":
+			OnHostMoney(m);
 			break;
 		case "chat":
 		{
@@ -291,6 +298,7 @@ internal partial class Session
 		if (unconfirmed.Remove(key))
 		{
 			Ui.Warn($"Your {template} overlapped something in the host's city, so it was taken back.");
+			RefundUndoneBuild(key);
 		}
 		else
 		{
@@ -344,6 +352,7 @@ internal partial class Session
 		foreach (string key in unconfirmed.Where(kv => now - kv.Value > UnconfirmedTimeout).Select(kv => kv.Key).ToList())
 		{
 			unconfirmed.Remove(key);
+			OnBuildConfirmed(key);
 		}
 	}
 

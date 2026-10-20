@@ -108,6 +108,18 @@ internal partial class Session
 		case "reconciled":
 			OnReconciled(d);
 			break;
+		case "setting":
+			OnLocalSetting(d);
+			break;
+		case "settings":
+			OnGameSettings(d);
+			break;
+		case "moneymark":
+			if (Util.Int(d, "mark") is long markId && Util.Int(d, "step") is long markStep)
+			{
+				money.OnMark(markId, (int)markStep);
+			}
+			break;
 		case "error":
 			Ui.Log("[mod error] " + line);
 			if (Util.Str(d, "type") == "place")
@@ -117,6 +129,10 @@ internal partial class Session
 			break;
 		case "eval":
 			Ui.Info("lua> " + Util.Str(d, "out"));
+			if (opts.Dev)
+			{
+				WriteDevOutput(d);
+			}
 			break;
 		}
 	}
@@ -143,6 +159,9 @@ internal partial class Session
 		worldPending = true;
 		StopTileSync();
 		ResetDrift();
+		settingsToGame.Clear();
+		gameSettingSeq = 0;
+		ResetMoney();
 		if (IsHost && wasInCity)
 		{
 			HostLeftCity();
@@ -201,6 +220,7 @@ internal partial class Session
 				toGame.Clear();
 				tilesToApply.Clear();
 				landToApply.Clear();
+				sharedSettings.Clear();
 			}
 		}
 	}
@@ -235,9 +255,16 @@ internal partial class Session
 			worldPending = false;
 			Ui.Good("You're in the host's city. Building is now shared.");
 			DeleteOldWorldSave();
+			if (host != null && SharedSettings.PeerSupports(host.Version))
+			{
+				// Prices and money may have changed since the host's save was written.
+				host.Send(Msg.Make("sync?"));
+			}
 		}
 		else
 		{
+			// Fill the shared price table from our own game.
+			RequestGameSettings();
 			Ui.Good($"City loaded ({Util.Int(d, "objects")} objects). Friends can join now.");
 			foreach (Peer peer in peers.Where(p => p.Hello).ToArray())
 			{
@@ -288,6 +315,10 @@ internal partial class Session
 		if (IsHost)
 		{
 			// The host's city is the truth: its builds go straight to everyone.
+			if (!BuildEvent.IsPlace(ev))
+			{
+				sharedSettings.Remove(BuildEvent.Key(ev));
+			}
 			Broadcast(Msg.Make("ev", "name", opts.Name, "ev", ev), null);
 		}
 		else if (host != null)
@@ -303,6 +334,7 @@ internal partial class Session
 				unconfirmed.Remove(BuildEvent.Key(ev));
 			}
 			host.Send(Msg.Make("ev", "ev", ev));
+			ChargeBuild(ev);
 		}
 	}
 

@@ -6,6 +6,29 @@ plus Lua scripts it installs into the game.
 The 0.2.0 source was recovered from the original `CPC-Multiplayer.exe` (a .NET Framework 4.0 console app, not obfuscated)
 by decompiling it with ILSpy; that is the first commit. The Lua files in `lua/` were embedded resources in the exe.
 
+## Quick start
+
+Every player needs the game and `CPC-Multiplayer.exe` (see [Build](#build)). The helper finds the game in your Steam
+library and installs the mod scripts by itself.
+
+1. **Host:** run `CPC-Multiplayer.exe host`. The game starts; load or start the city you want to share. A city that
+   has never been saved needs a save (Esc > Save) before a friend can join.
+2. **Friends:** run `CPC-Multiplayer.exe join <host's IP>`. The game starts and loads the host's city.
+3. Play. Builds, demolitions, roads, floors, land, prices and money are shared. Close the game or type `quit` to stop.
+
+Or run `CPC-Multiplayer.exe lobby` and type `host` or `join <ip>` once the game is up. Over the internet the host
+needs TCP port 27777 forwarded (or `--port`). Every player must run the same version.
+
+What is shared:
+
+| Shared | How |
+|---|---|
+| Objects (buildings, entrances, decorations) | Placed and demolished on every PC |
+| Roads, floors, land ownership | Copied through the game's memory |
+| Parking prices | The host's value wins; anyone can change them (0.4.0) |
+| Money | One wallet, the host's. Everyone's builds are paid from it (0.4.0) |
+| Cars, traffic, how full garages are | **Not shared**: each PC simulates its own |
+
 ## Build
 
 ```
@@ -21,6 +44,12 @@ The output exe goes next to `carparkcapital.exe` (or pass `--game "<folder>"`).
 .NET Framework apps can't start from a path longer than 260 characters ("This application could not be started").
 
 Run every test with `tests\run.ps1` (see `tests/README.md`).
+
+## Developer console
+
+`--dev` makes the helper check `multiplayer/runtime/devcmd.txt` in the game folder once a second. The whole file is run
+as one Lua chunk in the game (in the level's environment, like the `lua` command) and then deleted. Each result is
+appended to `multiplayer/runtime/devout.txt`. It is off by default. `docs/api-findings.md` lists what was learned with it.
 
 ## Lobby mode
 
@@ -76,6 +105,35 @@ Windows user name.
   as a first step towards a "save now" when a friend joins.
 - The helper's code is split by concern (see Layout), with the decompiler's names replaced. The Lua sync logic has its
   own tests against a stand-in engine, and the helper's sync logic has unit tests.
+- **Prices are shared.** Parking entrance prices (`ParkingEntry.ratePerMinute`), and shop, drive-thru and restroom prices
+  (`Pricing.price`, not yet tried in game), are the same on every player's PC.
+  - The host's game holds the true values. Clients send only what they changed. The host applies changes in the order
+    they arrive, broadcasts what changed every 2 s, and sends a full copy every 30 s and to anyone who finishes loading
+    its city.
+  - The mod (`lua/settings.lua`) applies only values that differ, and holds a friend's price until that friend's object
+    exists here.
+  - Edits are numbered, so a player's own edit isn't undone by an older value that was already on its way (no flicker
+    while dragging the slider). Every newer value still applies: when two players change the same price at once, the
+    one that reaches the host last wins on every PC.
+  - Inbox messages of this kind replace each other, so a paused or loading game doesn't collect stale copies.
+- **Money is shared.** The host's balance is the city's wallet, and every player sees it.
+  - Lua can change the money but not read it, so the helper finds the balance in the game's memory (`src/MoneySync.cs`):
+    it scans for values near the balance in the city's save, the mod adds and takes back a $500 marker, and of the
+    values that moved with it, the balance is the one whose HUD copy follows a small nudge. This takes about 20 s after a
+    city loads, and shows as "Shared money: on".
+  - The host's helper sends its balance every 2 s (at least every 10 s). A friend's helper writes it into its own game,
+    so a friend's own simulation earns and pays nothing.
+  - A friend's build is charged by their game and sent to the host as a numbered `spend`, which the host's game applies
+    once (`transactMoney`). Prices come from the game's template scripts (`src/Prices.cs`); demolitions give half back
+    unless the template says otherwise. Roads and floors cost their material's price per tile. Land plots, and builds
+    missing from the table, are charged what the friend's game spent (not tried in game yet: before this, a friend's
+    land purchase was free).
+  - Until the host has applied a friend's spend, the friend sees it already taken off, so the money doesn't bounce.
+  - A friend's build the host takes back (`undo`) is refunded in full.
+  - Money can go negative; nothing gets removed.
+  - Known gaps: removing or reshaping tiles is free; the refund rules for the 14 drive-thru templates (full refund) and
+    for old objects aren't measured; selling land isn't refunded.
+- `--dev` developer console (see Developer console).
 
 ## Changes in 0.3.0
 
@@ -100,7 +158,7 @@ Windows user name.
 
 | File | Role |
 |---|---|
-| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`), console menu; `Ui` writes status lines to a sink (the console today) |
+| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`), console menu; `Ui` writes status lines to a sink (the console today) |
 | `src/Settings.cs`, `SteamName.cs`, `Util.cs` | `multiplayer/settings.json` (name, recent hosts); the Steam profile name as the default name; JSON and small helpers |
 | `src/Session/Session.cs` | The helper while the game runs: main loop, starting and relaunching the game, the lobby, shutting down. Its header explains how the parts fit |
 | `src/Session/Session.Game.cs` | The mod in our game: its `MP>` lines, and messages we send it |
@@ -108,21 +166,28 @@ Windows user name.
 | `src/Session/Session.Client.cs` | Joining: the connection to the host, loading the host's city, builds waiting for the host |
 | `src/Session/Session.Tiles.cs` | Roads, floors and land: polling, sending, writing in others' changes |
 | `src/Session/Session.Drift.cs` | Digests, comparing with the host, repairing differences |
-| `src/Session/Session.Commands.cs` | Console and control-file commands |
+| `src/Session/Session.Prices.cs` | Prices: our game's edits, the host's table and its broadcasts |
+| `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
+| `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
 | `src/Protocol/Msg.cs`, `BuildEvent.cs` | Building and reading messages; checking build events (`place`/`demolish`/`remove`) |
 | `src/Sync/ChangeLog.cs` | Host: every change since the city opened, for joiners |
 | `src/Sync/PendingEdits.cs` | Client: tile and land changes the host hasn't confirmed |
 | `src/Sync/DriftTracker.cs` | Client: which buckets or areas to repair |
+| `src/Sync/SharedSettings.cs` | The host's price table (whitelist, ranges, what changed) and the queue of prices for our game |
+| `src/Sync/MoneySync.cs` | Finds, reads and writes the city's money in the game's memory |
 | `src/Sync/TileSync.cs`, `Native.cs`, `TileChange.cs`, `PaintAnchor.cs` | Roads/floors/land in the game's memory (`ReadProcessMemory`/`WriteProcessMemory`), and their area hashes |
 | `src/Net/Peer.cs` | One TCP connection: newline-delimited JSON, queued sends, liveness |
 | `src/Game/GameInstall.cs` | Finds the game (Steam library or parent folders), copies the Lua files in, and patches 3 game scripts between `-- [cpc-multiplayer] begin/end` markers |
 | `src/Game/GameProcess.cs` | Starts `carparkcapital.exe -mpsession <id>`, reads its stdout, force-closes it |
+| `src/Game/Prices.cs`, `SaveFile.cs` | Build and tile prices from the game's scripts; the balance in a save (zlib + CBOR) |
 | `src/Game/Inbox.cs`, `Lua.cs` | Writes `multiplayer/runtime/inbox_<id>.lua`, the helper→game message channel |
 | `lua/boot.lua` | In-game bootstrap: loaded from the main menu and from every level; runs a 0.1 s tick, or a frame-driven one while paused |
 | `lua/inbox.lua` | Polls the inbox file, dispatches messages (`hello`, `loadworld`, `leave`, `eval`), acks |
 | `lua/util.lua` | JSON encoder; `MP.emit` prints `MP>{json}` to stdout |
 | `lua/hooks.lua` | Wraps `setComponents`/`setComponent` to see every new placeable entity |
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; keeps the digest of shared objects and repairs buckets; runs the repaint queue; reports the map size |
+| `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices |
+| `lua/money.lua` | Marker transactions for finding the money; applies friends' spends on the host |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
 | `tests/` | Stand-in game, scenario runner, Lua tests with a stand-in engine, helper unit tests (see `tests/README.md`) |
@@ -148,8 +213,19 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `ping` | both | Keep-alive, every 3 s (0.3.0) |
 | `hostleft` | host → client | The host left its city (0.3.0) |
 | `bye` | host → client | The host is shutting down (0.3.0) |
+| `setting` | client → host | The client's player changed a price: `key`, `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) and `seq`, which counts up (0.4.0) |
+| `settings` | host → client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`). `ack` is the newest `seq` from this client the host had applied; the client skips objects it changed after that (0.4.0) |
+| `sync?` | client → host | Sent after loading the host's city: asks for every current price and the money (0.4.0) |
+| `spend` | client → host | The client's build or demolition: `id` (counts up), `amount` (negative for a refund), `reason`, `key`. Applied once per `id` (0.4.0) |
+| `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). Every 2 s when it changes, at least every 10 s, and after `sync?` (0.4.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
 `demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`), and the
 helper writes messages to the inbox file (`hello`, `loadworld`, `leave`, `place`, `demolish`, `remove`, `undo`, `dump`,
 `reconcile`, `paint`, `eval`).
+Prices add `setting` (game → helper, a local
+change, with its own `seq`), inbox `settings` (apply these; `seen` is the newest `seq` the helper had, so the game skips
+values for a field it changed later), inbox `settings?` (reply with all values) and its `settings` reply. For money:
+inbox `moneymark` (`mark`, `amount`: add it, take it back ~0.5 s later, reporting each step as `moneymark`) and inbox
+`spend` (host only: `spent` and `refunded` from friends).
+

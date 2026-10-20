@@ -138,6 +138,8 @@ internal partial class Session
 		landToApply.Clear();
 		proposals.Clear();
 		worldRequests.Clear();
+		sharedSettings.Clear();
+		settingsToGame.Clear();
 		SendHello();
 		if (gameContext == "level")
 		{
@@ -150,6 +152,7 @@ internal partial class Session
 			{
 				locateAttempts = 0;
 				StartTileSync();
+				RequestGameSettings();
 			}
 		}
 		else
@@ -222,6 +225,15 @@ internal partial class Session
 		case "players?":
 			OnPeerPlayers(p);
 			break;
+		case "setting":
+			OnPeerSetting(p, m);
+			break;
+		case "sync?":
+			OnPeerSyncRequest(p);
+			break;
+		case "spend":
+			OnPeerSpend(p, m);
+			break;
 		}
 	}
 
@@ -267,6 +279,7 @@ internal partial class Session
 		{
 			// Demolished again before our game finished placing it: nothing left to decide.
 			proposals.Remove(key);
+			sharedSettings.Remove(key);
 			DeliverToGame(ev);
 		}
 		Broadcast(Msg.Make("ev", "name", p.Name, "ev", ev), p);
@@ -288,6 +301,7 @@ internal partial class Session
 		// Something in our city is in the way (usually a build of ours, or another friend's,
 		// that got there first). Our city decides: the build is taken back everywhere.
 		Ui.Warn($"{proposal.From.Name}'s {BuildEvent.Template(key)} didn't fit in your city, so it was taken back.");
+		sharedSettings.Remove(key);
 		changeLog.AddObject(new Dictionary<string, object>
 		{
 			{ "type", "demolish" },
