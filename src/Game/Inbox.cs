@@ -64,8 +64,14 @@ internal class Inbox
 		addedAt[id] = DateTime.UtcNow;
 		pending.Add(msg);
 		dirty = true;
+		PlayLog.Write("inbox", PlayLog.Summarize(msg));
 		return id;
 	}
+
+	// For the playtest log's snapshots.
+	public int PendingCount => pending.Count;
+
+	public long Acks;
 
 	// Like Add, but drops a still-pending message with the same type and key first, so a paused or
 	// loading game doesn't pile up stale copies (the whole pending list is rewritten on every change).
@@ -75,6 +81,7 @@ internal class Inbox
 		string tag = type + "\n" + key;
 		foreach (long old in coalesced.Where(kv => kv.Value == tag).Select(kv => kv.Key).ToList())
 		{
+			PlayLog.Write("inbox", "#" + old + " replaced by a newer " + type);
 			pending.RemoveAll(m => (long)m["id"] == old);
 			addedAt.Remove(old);
 			coalesced.Remove(old);
@@ -89,6 +96,7 @@ internal class Inbox
 	{
 		if (pending.Count > 0)
 		{
+			PlayLog.Write("inbox", "dropped " + pending.Count + " messages the game hasn't run: " + string.Join(", ", pending.Select(m => "#" + m["id"] + " " + m["type"])));
 			pending.Clear();
 			addedAt.Clear();
 			coalesced.Clear();
@@ -98,6 +106,7 @@ internal class Inbox
 
 	public void Ack(long id)
 	{
+		Acks++;
 		LastAcked = Math.Max(LastAcked, id);
 		int before = pending.Count;
 		pending.RemoveAll(m => (long)m["id"] <= id);

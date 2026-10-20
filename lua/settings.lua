@@ -84,11 +84,16 @@ local function applyTo(key, fields, seen)
     S.setLast[key] = last
     local current = read(e) or {}
     for name, value in pairs(fields) do
-        if type(value) == "number" and not stale(key, name, seen) then
+        if type(value) == "number" and stale(key, name, seen) then
+            if not same(current[name], value) then
+                MP.trace("price kept", { key = key, field = name, ours = current[name], theirs = value, seen = seen })
+            end
+        elseif type(value) == "number" then
             if not same(current[name], value) then
                 -- Recorded first, so the next scan doesn't report it back as a local change.
                 last[name] = value
-                write(e, name, value)
+                local ok = write(e, name, value)
+                MP.trace("price applied", { key = key, field = name, from = current[name], to = value, ok = ok })
             else
                 last[name] = current[name]
             end
@@ -168,6 +173,7 @@ end
 local function applyPending()
     for key, pending in pairs(S.setPending) do
         if S.simTick > pending.untilTick then
+            MP.trace("price dropped", { key = key, why = "the object never showed up here" })
             S.setPending[key] = nil
         elseif S.byKey[key] and valid(S.byKey[key]) then
             S.setPending[key] = nil
@@ -193,7 +199,8 @@ MP.handlers.settings = function(msg)
         if type(entry.key) == "string" and type(entry.fields) == "table" then
             if not S.readyAnnounced or not applyTo(entry.key, entry.fields, seen) then
                 -- Not loaded yet, or a friend's object that hasn't been placed here yet.
-                S.setPending[entry.key] = { fields = entry.fields, seen = seen, untilTick = S.simTick + PENDING_TICKS }
+                if not S.setPending[entry.key] then MP.trace("price waits", { key = entry.key, why = "object not here yet" }) end
+                S.setPending[entry.key] ={ fields = entry.fields, seen = seen, untilTick = S.simTick + PENDING_TICKS }
             end
         end
     end

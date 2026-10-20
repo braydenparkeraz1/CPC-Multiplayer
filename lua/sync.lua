@@ -112,6 +112,7 @@ local function index(e, key)
     S.byKey[key] = e
     S.scanList[#S.scanList + 1] = e
     -- The same object vanishing and coming straight back (the game re-creating it) is not a removal.
+    if S.pendingRemovals[key] then MP.trace("came back", { key = key }) end
     S.pendingRemovals[key] = nil
     if MP.onIndexed then MP.onIndexed(e, key) end
 end
@@ -228,6 +229,7 @@ local function scanKnown()
                     untrack(key)
                     MP.emit("demolish", { key = key })
                 else
+                    MP.trace("vanished", { key = key })
                     S.pendingRemovals[key] = S.tick
                 end
             end
@@ -270,15 +272,18 @@ local function flushPending()
             S.placing[key] = nil
         elseif valid(p.entity) and S.simTick - p.simTick > EXPECT_TICKS then
             -- The game never finished or dropped it: give up, without retrying.
+            MP.trace("place hung", { key = key, tries = p.tries })
             destroyEntity(p.entity)
             p.hung = true
         end
         if S.placing[key] and not valid(p.entity) then
             S.placing[key] = nil
             if S.removeAfterPlace[key] then
+                MP.trace("place cancelled", { key = key, why = "removed while it was being placed" })
                 S.removeAfterPlace[key] = nil
                 S.expectPlace[key] = nil
             elseif not p.hung and worthRetrying(p) then
+                MP.trace("place retry", { key = key, tries = p.tries + 1, proposal = p.msg.proposal == true })
                 local retry = {}
                 for k, v in pairs(p.msg) do retry[k] = v end
                 retry.tries = p.tries + 1
@@ -291,6 +296,7 @@ local function flushPending()
     end
     for key, untilTick in pairs(S.expectPlace) do
         if S.simTick > untilTick and not S.placing[key] then
+            MP.trace("place not seen", { key = key, why = "no object showed up in time" })
             S.expectPlace[key] = nil
             S.removeAfterPlace[key] = nil
         end
@@ -422,6 +428,7 @@ end
 -- Remote messages that arrive before the loaded world is indexed wait until it is.
 local function deferIfLoading(msg)
     if S.readyAnnounced then return false end
+    MP.trace("deferred", { type = msg.type, key = msg.key, why = "city still loading" })
     S.deferred[#S.deferred + 1] = msg
     return true
 end
@@ -432,19 +439,23 @@ MP.handlers.place = function(msg)
     if existing and valid(existing) then
         if component.Demolished.has(existing) then
             -- The same object is on its way out; place it again once it's gone.
+            MP.trace("place waits", { key = msg.key, why = "the same object is still being demolished" })
             S.delayed[#S.delayed + 1] = { tick = S.tick + RETRY_TICKS, msg = msg }
             return
         end
         -- Already here (built here too, or never gone): now it's shared.
+        MP.trace("already here", { key = msg.key })
         track(msg.key)
         MP.emit("placed", { key = msg.key })
         return
     end
     if S.tick - S.lastRemoteRemoval < CLEAR_TICKS then
         -- Something was just demolished for another player, maybe on this very tile.
+        MP.trace("place waits", { key = msg.key, why = "something was just demolished" })
         S.delayed[#S.delayed + 1] = { tick = S.lastRemoteRemoval + CLEAR_TICKS, msg = msg }
         return
     end
+    MP.trace("placing", { key = msg.key, tries = msg.tries or 0, proposal = msg.proposal == true, paused = MP.paused == true })
     S.expectPlace[msg.key] = S.simTick + EXPECT_TICKS
     local e = createEntity()
     local ok, err = pcall(function()
@@ -487,11 +498,14 @@ local function demolish(msg)
     local e = S.byKey[msg.key]
     if e and valid(e) then
         if not component.Demolished.has(e) then demolishFor(msg.key, e) end
+        MP.trace(msg.type, { key = msg.key, how = "demolishing it" })
     elseif S.placing[msg.key] then
         -- Still being placed: take it out once it's in.
+        MP.trace(msg.type, { key = msg.key, how = "once its placement finishes" })
         S.removeAfterPlace[msg.key] = true
     else
         -- Its retry (if any) was cancelled above; nothing is on its way.
+        MP.trace(msg.type, { key = msg.key, how = "nothing here to take out" })
         S.expectPlace[msg.key] = nil
         S.removeAfterPlace[msg.key] = nil
     end
@@ -525,12 +539,17 @@ MP.handlers.reconcile = function(msg)
     for _, key in ipairs(msg.keys or {}) do want[key] = true end
     for _, key in ipairs(msg.here or {}) do here[key] = true end
     local placed, removed = 0, 0
+    local log = { bucket = msg.bucket, removed = {}, added = {}, unshared = {}, kept = {} }
     for key, h in pairs(S.tracked) do
         local recent = S.localAt[key] and S.tick - S.localAt[key] < RECENT_LOCAL_TICKS
         if bucketOf(h) == msg.bucket and here[key] then
             -- The host has it too, as its own: so is ours.
+            log.unshared[#log.unshared + 1] = key
             untrack(key)
+        elseif bucketOf(h) == msg.bucket and not want[key] and recent then
+            log.kept[#log.kept + 1] = key
         elseif bucketOf(h) == msg.bucket and not want[key] and not S.expectRemoval[key] and not recent then
+            log.removed[#log.removed + 1] = key
             local e = S.byKey[key]
             if e and valid(e) and not component.Demolished.has(e) then
                 demolishFor(key, e)
@@ -552,15 +571,21 @@ MP.handlers.reconcile = function(msg)
                 if tpl then
                     local ok, err = pcall(MP.handlers.place, { key = key, tpl = tpl, x = tonumber(x), y = tonumber(y),
                         z = tonumber(z), rot = tonumber(rot), var = tonumber(var) })
-                    if ok then placed = placed + 1
+                    if ok then
+                        placed = placed + 1
+                        log.added[#log.added + 1] = key
                     else MP.emit("error", { type = "reconcile", err = tostring(err) }) end
                 end
             end
         end
     end
+    MP.trace("reconcile", log)
     MP.emit("reconciled", { bucket = msg.bucket, placed = placed, removed = removed })
 end
 
 -- Stop reporting removals once the level starts unloading.
-onEvent("OnStartLevelLoad", function() S.leaving = true end)
+onEvent("OnStartLevelLoad", function()
+    S.leaving = true
+    MP.trace("level unloading", {})
+end)
 setOnDestroyCallback(MP.hostEntity, function() S.leaving = true end)

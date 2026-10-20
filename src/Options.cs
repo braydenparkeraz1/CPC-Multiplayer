@@ -24,6 +24,9 @@ internal class Options
 	// Developer console: Lua in multiplayer/runtime/devcmd.txt is run in the game, results go to devout.txt.
 	public bool Dev;
 
+	// A client sends its playtest log to the host (--no-share-log turns it off).
+	public bool ShareLog = true;
+
 	public static Options Parse(string[] args)
 	{
 		Options options = new Options();
@@ -82,6 +85,9 @@ internal class Options
 				break;
 			case "--dev":
 				options.Dev = true;
+				break;
+			case "--no-share-log":
+				options.ShareLog = false;
 				break;
 			default:
 				Ui.Warn("Ignoring unknown argument: " + arg);

@@ -16,7 +16,8 @@ library and installs the mod scripts by itself.
 2. **Friends:** run `CPC-Multiplayer.exe join <host's IP>`. The game starts and loads the host's city.
 3. Play. Builds, demolitions, roads, floors, land, prices and money are shared. Close the game or type `quit` to stop.
 
-Or run `CPC-Multiplayer.exe lobby` and type `host` or `join <ip>` once the game is up. Over the internet the host
+Or just start `CPC-Multiplayer.exe` (double-click it): the game starts right away, and you type `host` or `join <ip>`
+in its window once the game is up (lobby mode). Over the internet the host
 needs TCP port 27777 forwarded (or `--port`). Every player must run the same version.
 
 What is shared:
@@ -51,10 +52,38 @@ Run every test with `tests\run.ps1` (see `tests/README.md`).
 as one Lua chunk in the game (in the level's environment, like the `lua` command) and then deleted. Each result is
 appended to `multiplayer/runtime/devout.txt`. It is off by default. `docs/api-findings.md` lists what was learned with it.
 
+## Playtest log
+
+Every run of the helper writes its own log to `multiplayer/logs/<date>_<time>_<mode>.log` in the game folder (the
+newest 30 are kept; the window shows the path, and `log` prints it again). It has one timestamped line for:
+
+- everything the window showed, and every command typed
+- every message to and from other players (`net>`, `net<`), except pings; long strings (the city save, packed tiles)
+  and lists longer than 24 items are shortened
+- every message written for the game's mod (`inbox`), and every message the mod sent back (`mod`) except
+  heartbeats and acks; the mod's trace of what it decided (`lua`): a replay placing, waiting, retrying or given up,
+  what a repair added and took out, prices applied or kept, friends' spends applied
+- the game starting, changing room and exiting, role changes, connections opening and closing, crashes
+- a snapshot every 30 s and on `status` (`snap`): what the helper waits for, every connection's traffic, silence and
+  clock difference, tile and money sync state, memory use
+
+`note <text>` marks a moment ("the bench just vanished") in your log and every other player's, with a snapshot, so
+the logs of one session can be lined up afterwards.
+
+**Friends' logs go to the host.** A friend's helper sends its whole log to the host over the game connection (so over
+the same LAN or VPN), from its first line and then as it grows, about once a second. The host keeps each one in a
+folder named after its own log: `multiplayer/logs/<host's run>/<name> (<friend's run>).log`, and `log` prints where.
+After a reconnect the friend sends from the start again and the host adds only the lines it doesn't have yet. A friend
+who'd rather not share starts the helper with `--no-share-log`. These logs include the friend's PC name and Windows
+version (in the first lines).
+
+`helper-<mode>.log` in `multiplayer/runtime` is still written as before (overwritten each run).
+
 ## Lobby mode
 
-`CPC-Multiplayer.exe lobby` starts the game first and lets you pick afterwards. Type these in the window, or write them
-to the file given with `--control <file>`:
+`CPC-Multiplayer.exe` with no mode (or `CPC-Multiplayer.exe lobby`) starts the game first and lets you pick afterwards
+(`CPC-Multiplayer.exe uninstall` removes the mod). Type these in the window, or write them to the file given with
+`--control <file>`:
 
 | Command | Effect |
 |---|---|
@@ -62,6 +91,7 @@ to the file given with `--control <file>`:
 | `join [ip[:port]]` | Join a host; without an address, the last one that worked |
 | `name <name>` | Change your name (lobby only) |
 | `leave` | End the session and go back to the lobby. A host keeps its city open; a client's game restarts at the main menu |
+| `note <text>` | Mark this moment in the playtest log, yours and every other player's (see Playtest log) |
 
 When the host leaves or closes the game, clients go back to the lobby instead of the helper exiting. Closing the game
 in the lobby ends the helper. `host` and `join` on the command line work as before.
@@ -158,7 +188,7 @@ Windows user name.
 
 | File | Role |
 |---|---|
-| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`), console menu; `Ui` writes status lines to a sink (the console today) |
+| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`, `--no-share-log`), console menu; `Ui` writes status lines to a sink (the console today) |
 | `src/Settings.cs`, `SteamName.cs`, `Util.cs` | `multiplayer/settings.json` (name, recent hosts); the Steam profile name as the default name; JSON and small helpers |
 | `src/Session/Session.cs` | The helper while the game runs: main loop, starting and relaunching the game, the lobby, shutting down. Its header explains how the parts fit |
 | `src/Session/Session.Game.cs` | The mod in our game: its `MP>` lines, and messages we send it |
@@ -169,6 +199,7 @@ Windows user name.
 | `src/Session/Session.Prices.cs` | Prices: our game's edits, the host's table and its broadcasts |
 | `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
+| `src/Session/Session.Log.cs`, `src/PlayLog.cs` | The playtest log: its file and line format, snapshots, players' notes |
 | `src/Protocol/Msg.cs`, `BuildEvent.cs` | Building and reading messages; checking build events (`place`/`demolish`/`remove`) |
 | `src/Sync/ChangeLog.cs` | Host: every change since the city opened, for joiners |
 | `src/Sync/PendingEdits.cs` | Client: tile and land changes the host hasn't confirmed |
@@ -210,7 +241,9 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `keys?` / `keys` | client → host / host → client | The host's object keys in one `bucket`, for a repair (0.4.0) |
 | `area?` / `area` | client → host / host → client | The host's tiles and land in one map `area`, deflated and base64, for a repair (0.4.0) |
 | `chat`, `players?` | both | Chat and player list |
-| `ping` | both | Keep-alive, every 3 s (0.3.0) |
+| `ping` | both | Keep-alive, every 3 s (0.3.0). `at`: the sender's clock (ms since 1970, UTC), for the playtest log |
+| `note` | both | A player's `note` (`name`, `text`), only written to the playtest log. The host passes it on |
+| `log` | client → host | Lines of the client's playtest log: `run` (its file name), `from` (number of the first line, from 0), `lines`. At most 128 KB a second; not logged themselves |
 | `hostleft` | host → client | The host left its city (0.3.0) |
 | `bye` | host → client | The host is shutting down (0.3.0) |
 | `setting` | client → host | The client's player changed a price: `key`, `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) and `seq`, which counts up (0.4.0) |
@@ -220,7 +253,7 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). Every 2 s when it changes, at least every 10 s, and after `sync?` (0.4.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
-`demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`), and the
+`demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, and `trace`, which only goes in the playtest log), and the
 helper writes messages to the inbox file (`hello`, `loadworld`, `leave`, `place`, `demolish`, `remove`, `undo`, `dump`,
 `reconcile`, `paint`, `eval`).
 Prices add `setting` (game → helper, a local

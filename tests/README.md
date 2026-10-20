@@ -73,6 +73,7 @@ Each starts both helpers with `lobby`, so the games start before anyone picks ho
 
 | Scenario (`run.ps1`) | Expected |
 |---|---|
+| NoModeIsLobby | Started with no mode (double-clicked), the helper starts the game in the lobby without asking anything; `host` then works |
 | LobbyHostJoin | Games get `hello` role `lobby`. The host runs `host` then `level`; the client's `join` reaches the host's city. The address lands in `settings.json` and chat arrives |
 | LobbyBadJoin | A dead address, a bad port and `join` with no history all fail and leave the client in the lobby; it can join afterwards |
 | LobbyHostLeaves | Host `leave`: the host game goes back to role `lobby` with the city still open. The client game closes, restarts in the lobby, and `MP_*.cpcp` is deleted. Host `host` again shares the open city, and client `join` (last address) gets back in |
@@ -88,6 +89,8 @@ The frozen-host case is not automated.
 | Scenario (`run.ps1`) | Expected |
 |---|---|
 | ClientBuildAccepted | A client's build reaches the host's game as a proposal; the host confirms it (`ok`). A host build reaches the client |
+| PlaytestLog | Both playtest logs (`multiplayer/logs`) show a client's build going out, coming in, into the host's game and back from its mod; the city and a shortened digest arrive; a client's `note` lands in both logs with a snapshot; `status` writes one, with the client's clock difference. The client's log reaches the host from its first line, without the `log` messages in it; after `reconnect` new lines arrive and none are written twice |
+| NoShareLog | A client started with `--no-share-log` sends the host no log |
 | ClientBuildRejected | The host's game can't place a client's build: the host takes it back, the client is told and its game gets `undo` |
 | ThreePlayers | A client's build reaches the other client straight away; when the host can't place it, both clients get `undo` |
 | InstantJoinLobbyCity | A host opens a city in the lobby and builds; after `host`, a client joins without anyone saving, and gets the build made after the save |

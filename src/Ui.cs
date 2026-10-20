@@ -83,7 +83,8 @@ internal static class Ui
 		}
 	}
 
-	public static void Log(string line)
+	// Also goes to the playtest log, unless the caller writes a shorter form there itself.
+	public static void Log(string line, bool playLog = true)
 	{
 		lock (consoleLock)
 		{
@@ -91,6 +92,10 @@ internal static class Ui
 			{
 				logFile.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " " + line);
 			}
+		}
+		if (playLog)
+		{
+			PlayLog.Write("log", line);
 		}
 	}
 
@@ -104,6 +109,7 @@ internal static class Ui
 				logFile.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " " + ((kind == UiKind.Step) ? (">> " + text) : text));
 			}
 		}
+		PlayLog.Write(kind.ToString().ToLowerInvariant(), text);
 	}
 
 	public static string Command(string command)
@@ -157,32 +163,12 @@ internal static class Ui
 			answer = answer.Trim();
 			if (answer.Length > 0)
 			{
+				PlayLog.Write("cmd", question + ": " + answer);
 				return answer;
 			}
 		}
 		while (defaultValue == null);
 		return defaultValue;
-	}
-
-	public static string AskMode()
-	{
-		Info("  [1] Host a game (your city, friends join you)");
-		Info("  [2] Join a friend's game");
-		Info("  [3] Uninstall the mod");
-		while (true)
-		{
-			switch (Ask("Choose 1, 2 or 3", null))
-			{
-			case "1":
-				return "host";
-			case "2":
-				return "join";
-			case "3":
-				return "uninstall";
-			case null:
-				return null;
-			}
-		}
 	}
 
 	public static void PressEnter()

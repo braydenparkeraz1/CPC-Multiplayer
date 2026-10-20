@@ -52,6 +52,14 @@ function MP.emit(msgType, data)
     print("MP>" .. encode(payload))
 end
 
+-- What the mod decided that the helper can't see otherwise (a replay waiting or retrying, a price
+-- kept), for the helper's playtest log only.
+function MP.trace(event, data)
+    data = data or {}
+    data.ev = event
+    MP.emit("trace", data)
+end
+
 -- Lists the keys of a table, or of a userdata's metatable (sol2 usertypes keep members there).
 function MP.keysOf(v)
     local keys = {}

@@ -35,6 +35,43 @@ internal class GameProcess
 		}
 	}
 
+	// For the playtest log: the exit code, or "?" while running.
+	public string ExitCode
+	{
+		get
+		{
+			try
+			{
+				return proc != null && proc.HasExited ? proc.ExitCode.ToString() : "?";
+			}
+			catch (InvalidOperationException)
+			{
+				return "?";
+			}
+		}
+	}
+
+	// The game's memory use in MB, or -1 if it isn't running.
+	public long WorkingSetMB
+	{
+		get
+		{
+			try
+			{
+				if (!Running)
+				{
+					return -1;
+				}
+				proc.Refresh();
+				return proc.WorkingSet64 / (1024 * 1024);
+			}
+			catch (InvalidOperationException)
+			{
+				return -1;
+			}
+		}
+	}
+
 	public bool Running
 	{
 		get
@@ -105,6 +142,7 @@ internal class GameProcess
 		proc.Exited += (s, e) => Exited?.Invoke();
 		started = DateTime.Now;
 		proc.Start();
+		PlayLog.Write("state", $"game started: pid {proc.Id}, {startInfo.FileName} {startInfo.Arguments}");
 		proc.BeginOutputReadLine();
 		proc.BeginErrorReadLine();
 	}

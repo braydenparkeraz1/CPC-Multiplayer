@@ -31,6 +31,7 @@ end
 MP.handlers.spend = function(msg)
     if type(msg.spent) == "number" and msg.spent > 0 then transact(-msg.spent, "CONSTRUCTION") end
     if type(msg.refunded) == "number" and msg.refunded > 0 then transact(msg.refunded, "REFUND") end
+    MP.trace("spend applied", { id = msg.id, spent = msg.spent, refunded = msg.refunded })
 end
 
 MP.moneyTick = function()

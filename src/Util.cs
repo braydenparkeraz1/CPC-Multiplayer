@@ -25,6 +25,12 @@ internal static class Util
 		return clean.Length != 0 ? clean : "Player";
 	}
 
+	// Milliseconds since 1970 (UTC), as sent in pings.
+	public static long UnixMs()
+	{
+		return (DateTime.UtcNow.Ticks - 621355968000000000L) / 10000;
+	}
+
 	public static string NewId()
 	{
 		return Guid.NewGuid().ToString("N").Substring(0, 10);

@@ -13,10 +13,10 @@ internal partial class Session
 	{
 		if (role == Role.Lobby)
 		{
-			Ui.Info("Commands: host | join <ip[:port]>" + (settings.LastHost != null ? " (last: " + settings.LastHost + ")" : "") + " | name <name> (now " + opts.Name + ") | status | quit");
+			Ui.Info("Commands: host | join <ip[:port]>" + (settings.LastHost != null ? " (last: " + settings.LastHost + ")" : "") + " | name <name> (now " + opts.Name + ") | status | note <text> | quit");
 			return;
 		}
-		Ui.Info("Commands: say <message> | players | refresh" + (IsHost ? "" : " | reconnect") + " | status" + (lobbyMode ? " | leave" : "") + " | quit");
+		Ui.Info("Commands: say <message> | players | refresh" + (IsHost ? "" : " | reconnect") + " | status | note <text>" + (lobbyMode ? " | leave" : "") + " | quit");
 	}
 
 	private void ReadCommands()
@@ -130,8 +130,22 @@ internal partial class Session
 	{
 		string verb = cmd.Split(' ')[0].ToLowerInvariant();
 		string arg = cmd.Length > verb.Length ? cmd.Substring(verb.Length).Trim() : "";
+		if (verb != "note")
+		{
+			PlayLog.Write("cmd", cmd);
+		}
 		switch (verb)
 		{
+		case "note":
+			Note(arg);
+			break;
+		case "log":
+			Ui.Info("Playtest log: " + (PlayLog.FilePath ?? "not open"));
+			if (friendLogs.Count > 0)
+			{
+				Ui.Info("Friends' logs: " + PlayLog.FriendsDir);
+			}
+			break;
 		case "host":
 			BeginHost();
 			break;
@@ -165,6 +179,7 @@ internal partial class Session
 			break;
 		case "status":
 			PrintStatus();
+			WriteSnapshot("status");
 			break;
 		case "lua":
 			// Developer console: runs Lua in the game and prints the result.

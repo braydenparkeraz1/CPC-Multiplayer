@@ -64,10 +64,11 @@ internal partial class Session
 		}
 		string type = Util.Str(msg, "t");
 		Dictionary<string, object> d = Util.Dict(msg, "d") ?? new Dictionary<string, object>();
-		if (type != "ack" && type != "hb" && type != "digest")
+		if (type != "ack" && type != "hb" && type != "digest" && type != "trace")
 		{
-			Ui.Log("[mod] " + line);
+			Ui.Log("[mod] " + line, playLog: false);
 		}
+		LogModMessage(type, d);
 		switch (type)
 		{
 		case "hb":
@@ -137,6 +138,36 @@ internal partial class Session
 		}
 	}
 
+	// The playtest log gets every mod message but heartbeats and acks (counted in the snapshots).
+	// A digest is cut down to its totals; "trace" lines are the mod's own notes on what it decided.
+	private void LogModMessage(string type, Dictionary<string, object> d)
+	{
+		switch (type)
+		{
+		case "hb":
+			modHeartbeats++;
+			break;
+		case "ack":
+			break;
+		case "digest":
+		{
+			long objects = Msg.List(d, "counts").Sum(c => c is IConvertible n ? Convert.ToInt64(n) : 0L);
+			PlayLog.Write("mod", $"digest: {objects} shared objects, busy={Msg.Bool(d, "busy")}, inbox msg {Util.Int(d, "msg")}");
+			break;
+		}
+		case "trace":
+		{
+			string ev = Util.Str(d, "ev") ?? "?";
+			d.Remove("ev");
+			PlayLog.Write("lua", ev + " " + PlayLog.Summarize(d));
+			break;
+		}
+		default:
+			PlayLog.Write("mod", type + " " + PlayLog.Summarize(d));
+			break;
+		}
+	}
+
 	private void OnHeartbeat(Dictionary<string, object> d)
 	{
 		lastHeartbeat = DateTime.UtcNow;
@@ -153,7 +184,9 @@ internal partial class Session
 	{
 		bool wasInCity = gameContext == "level";
 		roomSeq++;
+		string before = gameContext;
 		gameContext = Util.Str(d, "context") ?? "?";
+		PlayLog.Write("state", $"room {roomSeq}: game {before} -> {gameContext}");
 		gameReady = false;
 		gamePaused = false;
 		worldPending = true;
@@ -309,6 +342,7 @@ internal partial class Session
 		}
 		if (!InSharedCity)
 		{
+			PlayLog.Write("log", $"our {BuildEvent.Type(ev)} of {BuildEvent.Key(ev)} isn't shared: not in the shared city ({RoleName}, {gameContext}, ready={gameReady}, worldPending={worldPending})");
 			return;
 		}
 		Ui.Player(BuildEvent.Describe(opts.Name, ev));
@@ -341,6 +375,7 @@ internal partial class Session
 	// A build from another player finished in our game.
 	private void OnReplayPlaced(string key)
 	{
+		PlayLog.Write("log", "our game placed " + key + (IsHost && key != null && proposals.ContainsKey(key) ? " (a friend's build: confirming it)" : ""));
 		if (IsHost && key != null)
 		{
 			ResolveProposal(key, accepted: true);
@@ -376,6 +411,10 @@ internal partial class Session
 	{
 		if (!gameReady || (!IsHost && worldPending))
 		{
+			if (toGame.Count > 0)
+			{
+				PlayLog.Write("log", $"{toGame.Count} messages for our game wait (ready={gameReady}, worldPending={worldPending})");
+			}
 			return;
 		}
 		foreach (Dictionary<string, object> msg in toGame)

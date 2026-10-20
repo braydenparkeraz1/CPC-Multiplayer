@@ -21,6 +21,8 @@ internal static class Program
 		{
 		}
 		Ui.Banner();
+		AppDomain.CurrentDomain.UnhandledException += (s, e) => PlayLog.Write("crash", "unhandled: " + e.ExceptionObject);
+		AppDomain.CurrentDomain.ProcessExit += (s, e) => PlayLog.Write("state", "helper exiting");
 		try
 		{
 			return Run(args);
@@ -28,7 +30,8 @@ internal static class Program
 		catch (Exception ex)
 		{
 			Ui.Error("Unexpected error: " + ex.Message);
-			Ui.Log(ex.ToString());
+			Ui.Log(ex.ToString(), playLog: false);
+			PlayLog.Write("crash", ex.ToString());
 			Ui.PressEnter();
 			return 1;
 		}
@@ -47,13 +50,19 @@ internal static class Program
 		Ui.Info("Game folder: " + gameDir);
 		if (options.Mode == null)
 		{
-			options.Mode = Ui.AskMode();
-			if (options.Mode == null)
-			{
-				return 1;
-			}
+			// Started without a mode (double-clicked): the game starts right away, and the player
+			// picks host or join in this window.
+			options.Mode = "lobby";
 		}
 		Ui.OpenLog(Path.Combine(gameDir, "multiplayer", "runtime", "helper-" + options.Mode + ".log"));
+		PlayLog.Open(gameDir, options.Mode);
+		PlayLog.Write("state", $"CPC-Multiplayer {Version}, args: {string.Join(" ", args)}");
+		PlayLog.Write("state", $"{Environment.MachineName}, {Environment.OSVersion}, .NET {Environment.Version}, " +
+			$"local time UTC{DateTimeOffset.Now:zzz}, now {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC");
+		if (PlayLog.FilePath != null)
+		{
+			Ui.Info("Playtest log: " + PlayLog.FilePath);
+		}
 		if (options.Mode == "uninstall")
 		{
 			GameInstall.Uninstall(gameDir);

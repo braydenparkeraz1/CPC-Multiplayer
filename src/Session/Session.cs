@@ -26,6 +26,7 @@ namespace CpcMultiplayer;
 //   Session.Prices.cs    prices and other player-set values, the host's table being the truth
 //   Session.Money.cs     one wallet (the host's): reading and writing it, friends' spends
 //   Session.Commands.cs  console and control-file commands
+//   Session.Log.cs       the playtest log: snapshots of all of the above, players' notes
 internal partial class Session
 {
 	private enum Role
@@ -53,7 +54,17 @@ internal partial class Session
 
 	private readonly Settings settings;
 
-	private Role role;
+	private Role roleValue;
+
+	private Role role
+	{
+		get => roleValue;
+		set
+		{
+			PlayLog.Write("state", $"role {roleValue} -> {value}");
+			roleValue = value;
+		}
+	}
 
 	// Started in the lobby: after a session ends the player gets back there instead of the helper exiting.
 	private readonly bool lobbyMode;
@@ -222,6 +233,8 @@ internal partial class Session
 		TileTick();
 		DriftTick();
 		UpdatePauseHint();
+		SnapshotTick();
+		ShareLogTick();
 	}
 
 	private string RoleName => role switch
@@ -239,6 +252,7 @@ internal partial class Session
 	private void OnGameExited()
 	{
 		bool closeRequested = closeRequestedAt != DateTime.MinValue;
+		PlayLog.Write("state", $"game exited (code {game.ExitCode}, after {game.Uptime.TotalSeconds:0}s, {(closeRequested ? "we asked it to close" : "not asked to close")})");
 		gameExited = true;
 		gameReady = false;
 		gameContext = "closed";
@@ -282,6 +296,7 @@ internal partial class Session
 		gameExited = false;
 		gameContext = "starting";
 		relaunched = IsClient;
+		PlayLog.Write("state", "relaunching the game, session " + sessionId);
 		game.Start(gameDir, sessionId);
 	}
 
@@ -354,6 +369,7 @@ internal partial class Session
 
 	private void Shutdown()
 	{
+		WriteSnapshot("shutting down");
 		if (game.Uptime > TimeSpan.Zero && game.Running && !gameExited)
 		{
 			Ui.Warn("The game is still open, but it is no longer synced with anyone.");
@@ -369,6 +385,7 @@ internal partial class Session
 			peer.Close();
 		}
 		host?.Close();
+		CloseFriendLogs();
 		tiles.AbandonAnchors();
 		tiles.Dispose();
 		inbox.Delete();
@@ -386,13 +403,14 @@ internal partial class Session
 		if (now - lastPing >= PingInterval)
 		{
 			lastPing = now;
+			// "at" lets the other side's playtest log tell how far apart our clocks are.
 			if (IsHost)
 			{
-				Broadcast(Msg.Make("ping"), null);
+				Broadcast(Msg.Make("ping", "at", Util.UnixMs()), null);
 			}
 			else if (host != null && !host.Closed)
 			{
-				host.Send(Msg.Make("ping"));
+				host.Send(Msg.Make("ping", "at", Util.UnixMs()));
 			}
 		}
 		if (IsHost)

@@ -298,6 +298,12 @@ internal partial class Session
 		if (Math.Abs(gap) > 0.005)
 		{
 			money.Write(target);
+			moneyWrites++;
+			moneyWritten += Math.Abs(gap);
+			if (Math.Abs(gap) >= 1000.0)
+			{
+				PlayLog.Write("log", $"money: wrote the host's {target:0.##} over our {current.Value:0.##}");
+			}
 		}
 	}
 

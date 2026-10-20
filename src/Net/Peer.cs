@@ -52,24 +52,29 @@ internal class Peer
 
 	public TimeSpan Silence => DateTime.UtcNow - new DateTime(Interlocked.Read(ref lastReceived), DateTimeKind.Utc);
 
-	public string Address
-	{
-		get
-		{
-			try
-			{
-				return client.Client.RemoteEndPoint.ToString();
-			}
-			catch (ObjectDisposedException)
-			{
-				return "?";
-			}
-		}
-	}
+	// For the playtest log: traffic so far, and how far the other side's clock is ahead of ours
+	// (from the "at" in its pings, so it includes the network delay).
+	public long MsgsIn, MsgsOut, BytesIn, BytesOut, PingsIn, PingsOut;
+
+	public long ClockAheadMs = long.MinValue;
+
+	// How this connection is named in the playtest log.
+	public string Label => (Name == "?" ? Address : Name) + "#" + Id;
+
+	// Read once: it can't be read after the connection is closed.
+	public readonly string Address;
 
 	public Peer(TcpClient client)
 	{
 		this.client = client;
+		try
+		{
+			Address = client.Client.RemoteEndPoint.ToString();
+		}
+		catch (Exception ex) when (ex is ObjectDisposedException || ex is SocketException || ex is NullReferenceException)
+		{
+			Address = "?";
+		}
 		client.NoDelay = true;
 		// A peer that stops reading (crashed PC, dropped network) must not keep the writer stuck.
 		client.SendTimeout = 15000;
@@ -84,6 +89,17 @@ internal class Peer
 			return;
 		}
 		byte[] bytes = Encoding.UTF8.GetBytes(Util.Json.Serialize(msg) + "\n");
+		Interlocked.Increment(ref MsgsOut);
+		Interlocked.Add(ref BytesOut, bytes.Length);
+		string type = Util.Str(msg, "t");
+		if (type == "ping")
+		{
+			Interlocked.Increment(ref PingsOut);
+		}
+		else if (type != "log")
+		{
+			PlayLog.Write("net>", Label + " " + PlayLog.Summarize(msg) + (bytes.Length > 4096 ? " (" + bytes.Length / 1024 + " KB)" : ""));
+		}
 		try
 		{
 			outgoing.Add(bytes);
@@ -92,6 +108,9 @@ internal class Peer
 		{
 		}
 	}
+
+	// Messages waiting for the writer thread.
+	public int Queued => outgoing.Count;
 
 	// Waits until everything queued so far is written (or the connection fails), at most `timeout`.
 	public void Drain(TimeSpan timeout)
@@ -139,20 +158,25 @@ internal class Peer
 					if (line.Length != 0)
 					{
 						Dictionary<string, object> msg;
+						Interlocked.Increment(ref MsgsIn);
+						Interlocked.Add(ref BytesIn, line.Length + 1);
 						try
 						{
 							msg = Util.Json.Deserialize<Dictionary<string, object>>(line);
 						}
 						catch (ArgumentException)
 						{
+							PlayLog.Write("net<", Label + " unreadable: " + PlayLog.Summarize(line));
 							continue;
 						}
 						catch (InvalidOperationException)
 						{
+							PlayLog.Write("net<", Label + " unreadable: " + PlayLog.Summarize(line));
 							continue;
 						}
 						if (msg != null)
 						{
+							LogReceived(msg, line.Length);
 							onMessage(this, msg);
 						}
 					}
@@ -171,12 +195,32 @@ internal class Peer
 		thread.Start();
 	}
 
+	private void LogReceived(Dictionary<string, object> msg, int length)
+	{
+		string type = Util.Str(msg, "t");
+		if (type == "log")
+		{
+			return;
+		}
+		if (type != "ping")
+		{
+			PlayLog.Write("net<", Label + " " + PlayLog.Summarize(msg) + (length > 4096 ? " (" + length / 1024 + " KB)" : ""));
+			return;
+		}
+		Interlocked.Increment(ref PingsIn);
+		if (Util.Int(msg, "at") is long at)
+		{
+			Interlocked.Exchange(ref ClockAheadMs, at - Util.UnixMs());
+		}
+	}
+
 	public void Close()
 	{
 		if (Closed)
 		{
 			return;
 		}
+		PlayLog.Write("state", "connection " + Label + " closed (after " + Interlocked.Read(ref MsgsIn) + " messages in, " + Interlocked.Read(ref MsgsOut) + " out)");
 		Closed = true;
 		outgoing.CompleteAdding();
 		try

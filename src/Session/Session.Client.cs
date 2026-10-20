@@ -266,6 +266,9 @@ internal partial class Session
 		case "money":
 			OnHostMoney(m);
 			break;
+		case "note":
+			OnNote(m, null);
+			break;
 		case "chat":
 		{
 			string name = Util.Str(m, "name");
@@ -279,7 +282,11 @@ internal partial class Session
 	private void OnHostEvent(Dictionary<string, object> m)
 	{
 		Dictionary<string, object> ev = BuildEvent.Sanitize(Util.Dict(m, "ev"));
-		if (ev != null && !kicked)
+		if (ev == null || kicked)
+		{
+			PlayLog.Write("log", "ignored a build from the host: " + (ev == null ? "not a valid event" : "we're out of the host's city"));
+		}
+		else
 		{
 			Ui.Player(BuildEvent.Describe(Util.CleanName(Util.Str(m, "name")), ev));
 			DeliverToGame(ev);
@@ -445,6 +452,10 @@ internal partial class Session
 		if (hostGone)
 		{
 			return;
+		}
+		if (host != null)
+		{
+			PlayLog.Write("state", $"host gone ({reason}): {DescribePeer(host)}");
 		}
 		hostGone = true;
 		host?.Close();

@@ -194,6 +194,7 @@ internal partial class Session
 		string type = Util.Str(m, "t");
 		if (!p.Hello && type != "hello")
 		{
+			PlayLog.Write("log", $"ignored {type} from {p.Label}: no hello yet");
 			return;
 		}
 		switch (type)
@@ -234,6 +235,12 @@ internal partial class Session
 		case "spend":
 			OnPeerSpend(p, m);
 			break;
+		case "note":
+			OnNote(m, p);
+			break;
+		case "log":
+			OnPeerLog(p, m);
+			break;
 		}
 	}
 
@@ -264,6 +271,7 @@ internal partial class Session
 		Dictionary<string, object> ev = BuildEvent.Sanitize(d);
 		if (ev == null || !InSharedCity)
 		{
+			PlayLog.Write("log", $"ignored a build from {p.Label}: " + (ev == null ? "not a valid event" : $"our city isn't shared right now ({gameContext}, ready={gameReady})"));
 			return;
 		}
 		string key = BuildEvent.Key(ev);
@@ -293,6 +301,7 @@ internal partial class Session
 			return;
 		}
 		proposals.Remove(key);
+		PlayLog.Write("log", $"{proposal.From.Name}'s {key} {(accepted ? "fits" : "doesn't fit")} in our city, after {(DateTime.UtcNow - proposal.At).TotalSeconds:0.0}s");
 		if (accepted)
 		{
 			proposal.From.Send(Msg.Make("ok", "key", key));
@@ -377,6 +386,7 @@ internal partial class Session
 
 	private void OnPeerClosed(Peer p)
 	{
+		PlayLog.Write("state", $"{p.Label} disconnected after {p.MsgsIn} messages in, {p.MsgsOut} out (silent {p.Silence.TotalSeconds:0.0}s)");
 		if (peers.Remove(p) && p.Hello)
 		{
 			Ui.Warn(p.Name + " left.");

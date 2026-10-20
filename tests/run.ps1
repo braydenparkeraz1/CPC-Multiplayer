@@ -209,6 +209,16 @@ function Scenario-LobbyHostJoin {
     Expect "host gets chat" { HelperLog $s.h } "\[Clienty\] hello from the client"
 }
 
+function Scenario-NoModeIsLobby {
+    # Started without a mode (double-clicked): the game starts at once and the player picks in the window.
+    $h = New-GameDir "host"; $port = Next-Port
+    Start-Helper $h @("--port", $port) | Out-Null
+    Expect "game starts without asking first" { GameLog $h } "hello role=lobby"
+    Expect "lobby hint" { HelperLog $h } "The game is at the main menu"
+    Helper $h "host"
+    Expect "hosting from the lobby" { HelperLog $h } "Hosting on port $port"
+}
+
 function Scenario-LobbyBadJoin {
     $port = Next-Port
     $s = Start-LobbyPair $port
@@ -338,6 +348,66 @@ function Scenario-ClientBuildAccepted {
     Expect "host confirms it to the client" { HelperLog $s.c } "the host placed our Bench@4,1,4/0/0"
     Game $s.h "build Lamp@5,1,5/0/0"
     Expect "host's build reaches the client" { GameLog $s.c } "place Lamp@5,1,5/0/0\r?\n"
+}
+
+function PlayLog([string]$dir) {
+    $logs = Get-ChildItem (Join-Path $dir "multiplayer\logs") -Filter "*.log" -ErrorAction SilentlyContinue | Sort-Object Name
+    if (-not $logs) { return "" }
+    return Read-Shared $logs[-1].FullName
+}
+
+function Scenario-PlaytestLog {
+    $s = Start-HostAndClient
+    Game $s.c "build Bench@4,1,4/0/0"
+    Expect "client logs its build going out" { PlayLog $s.c } "\[net>\] host#0 \{`"t`":`"ev`".*Bench@4,1,4/0/0"
+    Expect "host logs it coming in" { PlayLog $s.h } "\[net<\] Clienty#1 \{.*Bench@4,1,4/0/0"
+    Expect "host logs the replay for its game" { PlayLog $s.h } "\[inbox\] \{.*`"type`":`"place`".*Bench@4,1,4/0/0"
+    Expect "host logs the mod's messages" { PlayLog $s.h } "\[mod\] placed .*Bench@4,1,4/0/0"
+    Expect "the city arrival is logged" { PlayLog $s.c } "\[net<\] host#0 \{`"t`":`"world`",`"host`":`"Hosty`""
+    Expect "long lists are only counted" { PlayLog $s.c } "\[net<\] host#0 \{`"t`":`"digest`".*`"objects`":`"\(64 items\)`""
+    Helper $s.c "note the bench looks odd"
+    Expect "note in the client's log" { PlayLog $s.c } "\[note\] \[Clienty\] the bench looks odd"
+    Expect "note in the host's log" { PlayLog $s.h } "\[note\] \[Clienty\] the bench looks odd"
+    Expect "snapshot with the note" { PlayLog $s.h } "\[snap\] --- note from Clienty"
+    Start-Sleep -Seconds 4   # a ping from the client, with its clock
+    Helper $s.h "status"
+    Expect "status writes a snapshot" { PlayLog $s.h } "\[snap\] --- status"
+    Expect "host sees the client's clock" { PlayLog $s.h } "Clienty#1 .*clock [+-]\d+ ms vs ours"
+
+    # The client's log reaches the host, from its first line, without the messages carrying it.
+    Expect "host gets the client's log" { FriendLog $s.h "Clienty" } "\[note\] \[Clienty\] the bench looks odd"
+    $first = (Get-Content (Get-ChildItem (Join-Path $s.c "multiplayer\logs") -Filter *.log | Sort-Object Name)[-1].FullName -TotalCount 1)
+    if (-not (FriendLog $s.h "Clienty").StartsWith($first)) { throw "the host's copy doesn't start with the client's first line" }
+    Write-Host "    ok: from the first line"
+    if ((PlayLog $s.c) -match '"t":"log"' -or (PlayLog $s.h) -match '"t":"log"') { throw "log messages were logged" }
+    Write-Host "    ok: log messages aren't logged themselves"
+    # After reconnecting, the client sends its log again from the start; the host keeps one copy.
+    Helper $s.c "reconnect"
+    Expect "client reconnected" { HelperLog $s.c } "Connected to Hosty's game" 2
+    Helper $s.c "note after reconnecting"
+    Expect "host gets lines after the reconnect" { FriendLog $s.h "Clienty" } "after reconnecting"
+    if ([regex]::Matches((FriendLog $s.h "Clienty"), "\[note\] \[Clienty\] the bench looks odd").Count -ne 1) { throw "lines sent again were written twice" }
+    Write-Host "    ok: no lines twice"
+}
+
+# A friend's log as the host received it (multiplayer/logs/<host run>/<name> (<run>).log).
+function FriendLog([string]$dir, [string]$name) {
+    $logs = Get-ChildItem (Join-Path $dir "multiplayer\logs") -Recurse -Filter "$name (*).log" -ErrorAction SilentlyContinue
+    if (-not $logs) { return "" }
+    return Read-Shared $logs[0].FullName
+}
+
+function Scenario-NoShareLog {
+    $h = New-GameDir "host"; $c = New-GameDir "client"; $port = Next-Port
+    Start-Helper $h @("host", "--name", "Hosty", "--port", $port) | Out-Null
+    Expect "host listens" { HelperLog $h } "Hosting on port $port"
+    Game $h "level"
+    Expect "host city loaded" { HelperLog $h } "City loaded"
+    Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty", "--no-share-log") | Out-Null
+    Expect "client in host's city" { HelperLog $c } "You're in the host's city"
+    Start-Sleep -Seconds 3
+    if (FriendLog $h "Clienty") { throw "the client's log was sent" }
+    Write-Host "    ok: --no-share-log keeps the log at home"
 }
 
 function Scenario-ClientBuildRejected {
@@ -640,8 +710,8 @@ function Scenario-MoneyHostPaused {
 
 $scenarios = @("HelperUnits", "LuaSync",
     "HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
-    "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
-    "ClientBuildAccepted", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused",
+    "NoModeIsLobby", "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
+    "ClientBuildAccepted", "PlaytestLog", "NoShareLog", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused",
     "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
     "MoneyFound", "MoneyHostToClient", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
