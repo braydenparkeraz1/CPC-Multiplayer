@@ -19,6 +19,9 @@
 //   money <value>         set the city's money (income or upkeep of our own simulation)
 //   click <id>            the player clicked a button on the main menu (lua/menu.lua), e.g. "click host"
 //   speed <value>         the player paused (0) or changed the game speed
+//   buycar <name> <kind>  someone in our city now owns a car of that kind; sellcar <name>: no longer. Like the host's
+//                         mod, the owners are then reported ("cars"); an inbox "cars" (a friend's game told the host's
+//                         owners) is logged as "cars <count>: <name>=<kind>,..."
 //   carbrain <value>      our own simulation's carbrainness, in the city statistics from the next snapshot on
 //                         (every 4 game seconds); the newest snapshot's is logged as "stats carbrain=<value>"
 //   lock <value>          the player ticked "apply to all" for parking prices at that value: from then on
@@ -124,6 +127,9 @@ internal static class FakeGame
 	private static float ownCarbrain = 0.5f;
 
 	private static float loggedCarbrain = float.NaN;
+
+	// Who owns which car in our city (name -> kind).
+	private static readonly SortedDictionary<string, string> carOwners = new SortedDictionary<string, string>(StringComparer.Ordinal);
 
 	private static readonly IntPtr vtableMem = Marshal.AllocHGlobal(16);
 
@@ -570,6 +576,21 @@ internal static class FakeGame
 		case "carbrain":
 			ownCarbrain = float.Parse(arg, CultureInfo.InvariantCulture);
 			break;
+		case "buycar":
+		case "sellcar":
+		{
+			string[] words = arg.Split(' ');
+			if (parts[0] == "buycar")
+			{
+				carOwners[words[0]] = words[1];
+			}
+			else
+			{
+				carOwners.Remove(words[0]);
+			}
+			Emit("cars", "{\"owners\":{" + string.Join(",", carOwners.Select(kv => Json(kv.Key) + ":" + Json(kv.Value)).ToArray()) + "}}");
+			break;
+		}
 		case "lock":
 			Lock(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
@@ -711,6 +732,14 @@ internal static class FakeGame
 			}
 			Log($"reconcile {bucket}: placed {missing.Count} removed {extra.Count}");
 			Emit("reconciled", "{\"bucket\":" + bucket + ",\"placed\":" + missing.Count + ",\"removed\":" + extra.Count + "}");
+			break;
+		}
+		case "cars":
+		{
+			// {["owners"]={["Ann"]="BananaCar",...},}
+			IEnumerable<string> pairs = Regex.Matches(rest, @"\[""([^""]*)""\]=""([^""]*)""").Cast<Match>()
+				.Where(m => m.Groups[1].Value != "type").Select(m => m.Groups[1].Value + "=" + m.Groups[2].Value).OrderBy(x => x, StringComparer.Ordinal);
+			Log("cars " + pairs.Count() + ": " + string.Join(",", pairs.ToArray()));
 			break;
 		}
 		case "menu":

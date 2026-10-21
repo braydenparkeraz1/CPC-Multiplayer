@@ -87,11 +87,12 @@ if context == "level" then
         loadModule("hooks", roomEnv, "boot")
     end
     MP.room = MP_ROOMS and MP_ROOMS[roomEnv]
-    MP.onIndexed, MP.onUnindexed, MP.settingsTick, MP.moneyTick = nil, nil, nil, nil
+    MP.onIndexed, MP.onUnindexed, MP.settingsTick, MP.moneyTick, MP.carsTick = nil, nil, nil, nil, nil
     if MP.room then
         loadModule("sync", MP)
         loadModule("settings", MP)
         loadModule("money", MP)
+        loadModule("cars", MP)
     else
         MP.log("placeable hook missing, object sync disabled")
     end

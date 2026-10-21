@@ -10,11 +10,17 @@
 --   * a demolition (Demolished) removing the object a few ticks later
 --   * prices (ParkingEntry, Pricing) and "apply to all": with syncedPrices[kind] set, every update
 --     copies it onto every object of that kind, as the game does with money.syncedPrices
+--   * people and their cars (Person, Vehicle, VehicleOwner, OwnedVehicle; Transform while in town),
+--     names (getName/setName/getByName), and vehicle templates, which only give a Vehicle component
 -- Not modelled: paint jobs finish instantly as "ok" if the tile is free.
 local Engine = {}
 Engine.__index = Engine
 
-local COMPONENTS = { "Placeable", "Placed", "Placing", "Persistent", "Demolished", "ParkingEntry", "Pricing" }
+local COMPONENTS = { "Placeable", "Placed", "Placing", "Persistent", "Demolished", "ParkingEntry", "Pricing",
+    "Person", "Vehicle", "VehicleOwner", "OwnedVehicle", "Transform", "Driver", "VehiclePassenger" }
+
+-- Templates that make a car rather than a placeable.
+local VEHICLES = { Cabriolet = true, BananaCar = true, BubbleCabin = true }
 
 function Engine.new(root)
     local w = setmetatable({}, Engine)
@@ -32,6 +38,8 @@ function Engine.new(root)
     w.syncedPrices = {}  -- kind -> price, for kinds with "apply to all" ticked
     w.finishAfter = 2
     w.demolishAfter = 3
+    w.names = {}         -- entity -> name
+    w.logs = {}
     w.room = w:makeRoom()
     return w
 end
@@ -53,6 +61,7 @@ end
 
 function Engine:destroy(e)
     self.alive[e] = nil
+    self.names[e] = nil
     for _, name in ipairs(COMPONENTS) do self.comps[name][e] = nil end
     self.placingJobs[e] = nil
     self.demolishing[e] = nil
@@ -80,6 +89,7 @@ function Engine:componentApi(name)
             end
             return data
         end,
+        remove = function(e) store[e] = nil end,
     }
 end
 
@@ -110,6 +120,20 @@ function Engine:makeRoom()
     room.setOnDestroyCallback = function() end
     room.tileMapSize = { x = 64, y = 8, z = 64 }
     room.getPricingId = function(name) return w:templateOf("pricing:" .. name) end
+    room.getName = function(e) return w.names[e] end
+    room.setName = function(e, name)
+        for other, n in pairs(w.names) do
+            if n == name and other ~= e then return false end
+        end
+        w.names[e] = name
+        return true
+    end
+    room.getByName = function(name)
+        for e, n in pairs(w.names) do
+            if n == name then return e end
+        end
+        return nil
+    end
     return setmetatable(room, { __index = _G })
 end
 
@@ -119,6 +143,12 @@ function Engine:applyTemplate(e, tpl, persistent)
     if tpl == "Missing" then error("no template named Missing") end
     if persistent then
         self.comps.Persistent[e] = { applyTemplateOnLoad = tpl }
+    end
+    if VEHICLES[tpl] then
+        -- Vehicle.lua: the Vehicle component first, then the rest through setComponents.
+        self.comps.Vehicle[e] = {}
+        self.room.setComponents(e, {})
+        return
     end
     self.room.setComponents(e, { self.room.Placeable { templateIndex = self:templateOf(tpl) } })
     self.placingJobs[e] = { tpl = tpl, at = self.tick }
@@ -141,6 +171,30 @@ function Engine:spawnPlaced(tpl, x, y, z, rot, var)
         self.room.Placed { tilePosition = { x = x, y = y, z = z }, rotation = rot or 0, variantId = var or 0 },
     })
     return e
+end
+
+-- A person (out of town: no Transform), as loaded from a save; with a car of the given template, if any.
+function Engine:spawnPerson(name, carTemplate)
+    local p = self:create()
+    self.comps.Person[p] = {}
+    self.comps.Persistent[p] = { applyTemplateOnLoad = "Person" }
+    self.names[p] = name
+    if carTemplate then
+        local v = self:create()
+        self.room.applyTemplate(v, carTemplate, {}, true)
+        self.comps.VehicleOwner[p] = { vehicle = v }
+        self.comps.OwnedVehicle[v] = { owner = p }
+        self.names[v] = name .. "'s vehicle"
+    end
+    return p
+end
+
+-- The person's car (entity) and its template, or nil.
+function Engine:carOf(name)
+    local p = self.room.getByName(name)
+    local owner = p and self.comps.VehicleOwner[p]
+    if not owner or not self.alive[owner.vehicle] then return nil end
+    return owner.vehicle, self.comps.Persistent[owner.vehicle].applyTemplateOnLoad
 end
 
 -- Our player builds something with the build tool: its ghost is there when the object is made.
@@ -198,18 +252,20 @@ end
 
 -- Loads the mod the way the game does in a level: the hook while templates load, then sync
 -- (and settings, with withSettings).
-function Engine:bootMod(withSettings)
+function Engine:bootMod(withSettings, role)
     local function load(name, ...)
         local chunk = assert(loadfile(self.root .. "/lua/" .. name .. ".lua", "t", self.room))
         return chunk(...)
     end
     load("hooks", self.room, "test")
-    local MP = { handlers = {}, lastMsgId = 0, hostEntity = self:create(), env = self.room, context = "level" }
+    local MP = { handlers = {}, lastMsgId = 0, hostEntity = self:create(), env = self.room, context = "level", role = role }
+    MP.log = function(...) self.logs[#self.logs + 1] = table.concat({ ... }, " ") end
     MP.room = MP_ROOMS[self.room]
     load("util", MP)
     MP.emit = function(t, d) self.emitted[#self.emitted + 1] = { t = t, d = d } end
     load("sync", MP)
     if withSettings then load("settings", MP) end
+    load("cars", MP)
     self.MP = MP
     return MP
 end

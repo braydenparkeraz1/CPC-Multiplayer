@@ -1,7 +1,8 @@
 -- Car Park Capital Multiplayer - placeable creation hook.
 -- Called from _catalogue.lua while a level's templates load (before entities exist), once per level.
 -- Every template's create() calls setComponents/setComponent through the shared room environment,
--- so wrapping those two functions lets us see each entity that gets a Placeable component.
+-- so wrapping those two functions lets us see each entity that gets a Placeable component (and each car:
+-- every vehicle template sets its Vehicle component first).
 local roomEnv, installedBy = ...
 if type(roomEnv) ~= "table" or type(rawget(roomEnv, "setComponents")) ~= "function" then return end
 
@@ -17,9 +18,11 @@ if rooms[roomEnv] then return end
 -- is paused and players often build while paused.
 -- playerPaint: for those, whether the build tool was set to paint the floor under them (bAutoPaintFloor),
 -- so other players' games place them the same way.
+-- vehicles: every entity that got a Vehicle component (cars of all kinds), for lua/cars.lua.
 local state = {
     candidates = {}, seen = 0, installedBy = installedBy or "catalogue",
     seq = 0, ghostSeq = {}, ghostEntity = {}, playerPlaced = {}, playerPaint = {},
+    vehicles = {},
 }
 rooms[roomEnv] = state
 
@@ -31,10 +34,13 @@ local valid = roomEnv.valid
 local placeableHas, placeableGetFor = component.Placeable.has, component.Placeable.getFor
 local placedHas, placingHas, placingGetFor = component.Placed.has, component.Placing.has, component.Placing.getFor
 local persistentHas = component.Persistent.has
+local vehicleHas = component.Vehicle.has
+local vehicles = state.vehicles
 local origSetComponents = roomEnv.setComponents
 local origSetComponent = roomEnv.setComponent
 
 local function watch(entity)
+    if vehicles[entity] == nil and vehicleHas(entity) then vehicles[entity] = true end
     if candidates[entity] ~= nil or not placeableHas(entity) then return end
     candidates[entity] = 0
     state.seen = state.seen + 1

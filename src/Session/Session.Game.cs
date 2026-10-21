@@ -137,6 +137,12 @@ internal partial class Session
 		case "menu":
 			OnMenuClick(Util.Str(d, "click") ?? "");
 			break;
+		case "cars":
+			OnModCars(d);
+			break;
+		case "carsync":
+			OnModCarSync(d);
+			break;
 		case "eval":
 			Ui.Info("lua> " + Util.Str(d, "out"));
 			if (opts.Dev)
@@ -212,6 +218,7 @@ internal partial class Session
 		ResetMoney();
 		ResetSpeed();
 		ResetStats();
+		ResetCars();
 		ResetPriceMap();
 		if (IsHost && wasInCity)
 		{

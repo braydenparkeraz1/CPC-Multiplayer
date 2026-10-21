@@ -414,6 +414,8 @@ function Scenario-LuaSync {
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed" }
     & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\settings_test.lua") | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "Lua settings tests failed" }
+    & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\cars_test.lua") | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "Lua cars tests failed" }
 }
 
 # ---- 0.4.0 sync: the host decides, instant join, drift repair ----
@@ -867,6 +869,23 @@ function Start-SpeedPair([hashtable]$clientExtra = @{}) {
     return $s
 }
 
+function Scenario-CarsHostToClient {
+    # The host's game says who owns which car; the client's game is told, and so is a client joining later.
+    $s = Start-HostAndClient
+    Game $s.h "buycar Ann BananaCar"
+    Game $s.h "buycar Bob Cabriolet"
+    Expect "client game gets the host's owners" { GameLog $s.c } "cars 2: Ann=BananaCar,Bob=Cabriolet" 1 10
+    Game $s.h "sellcar Ann"
+    Expect "a car the host's person lost goes" { GameLog $s.c } "cars 1: Bob=Cabriolet" 1 10
+    # The client's own purchase isn't sent anywhere.
+    Game $s.c "buycar Cy Cabriolet"
+    Start-Sleep -Seconds 2
+    if ((GameLog $s.h) -match "cars \d+: .*Cy=") { throw "the client's purchase reached the host's game" }
+    $c2 = New-GameDir "client2"
+    Start-Helper $c2 @("join", "127.0.0.1:$($s.port)", "--name", "Second") | Out-Null
+    Expect "a later joiner gets the list after loading" { GameLog $c2 } "cars 1: Bob=Cabriolet" 1 30
+}
+
 function Scenario-StatsHostToClient {
     # Each game's own simulation gives other city statistics; the client's HUD shows the host's.
     $s = Start-SpeedPair
@@ -940,7 +959,7 @@ $scenarios = @("HelperUnits", "LuaSync",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
     "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
-    "StatsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
+    "StatsHostToClient", "CarsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
     "PriceLockedAtHost", "PriceLockedHidden")
 if ($Only) {
     # "-File" passes "A,B" as one string.
