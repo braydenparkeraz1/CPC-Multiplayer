@@ -184,6 +184,7 @@ price isn't in memory where the helper can find it. Inbox `typevalue?` is answer
 | SpeedClockCatchUp | The client's clock starts 30 s behind: it runs faster until it has caught up, then at the host's speed |
 | SpeedNoLayout | A game build the mod doesn't know: the helper says speed isn't shared, and builds still sync |
 | PriceLockedAtHost | "Apply to all" is ticked on the host: the client's price is undone there at first, the host's helper finds the stored price and changes it, and every entrance on both PCs ends at the client's price; the next change goes straight in |
+| PriceLockedTable | Like PriceLockedAtHost, but the stored price is a bare float among other prices (`FAKEGAME_LOCK_TABLE=1`), as in the game build checked; the host's helper finds it by its value |
 | PriceLockedHidden | The stored price can't be found: the host is told why friends can't change it, and the client goes back to the host's price |
 
 ClientBuildRejected now also checks that the client is told the game's reason.

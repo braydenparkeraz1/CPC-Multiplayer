@@ -181,6 +181,8 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
   host last wins everywhere.
   - Lua can't see or set the speed, and the mod's Lua doesn't run while paused. So the helper reads and writes it
     in the game's memory (`src/Sync/SpeedSync.cs`), every 50 ms, paused or not.
+  - Pausing (Space) doesn't change the speed: it sets a flag in the game's Level (`Level + 0x8`, 1 while paused),
+    found by diffing memory across three pauses. The helper reads and writes both, 0 meaning paused.
   - Where it lives was found by disassembling the game, so it only works with the game build it was found in
     (checked by the exe's SHA-256, `src/Sync/NativeLayout.cs`). With another build the helper says "Pause and game
     speed aren't shared" and everything else works as before.
@@ -201,7 +203,10 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
     followed by the price, checked by writing the friend's price and seeing every object take it) and changes it.
   - If it can't be found, the host's price stands and the player whose game holds it is told to untick
     "apply to all".
-  - Ticking or unticking the box itself is still each player's own.
+  - Ticking or unticking the box itself is still each player's own: the game keeps the ticked kinds in a native
+    container (`money.syncedPrices`, name -> price) that only its UI changes. The prices still end up the same.
+  - In the game build checked the stored prices aren't next to their names in memory but in a table of floats, so
+    the helper falls back to finding the price by its value (`src/Sync/PriceMapSync.cs`).
 - **A friend's suburban home no longer fails in the host's city.** The house turns its plot to Dirt while it's
   built, and those floor changes reached the host before the house did. The house needs Grass, so the host's game
   refused it, and the Dirt left behind made every retry fail too.

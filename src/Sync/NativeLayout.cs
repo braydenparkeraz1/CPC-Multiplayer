@@ -11,6 +11,8 @@ namespace CpcMultiplayer;
 // the game moves them, so they're only used when carparkcapital.exe's SHA-256 matches.
 //
 //   [exe + LevelPtr]        the open Level
+//   Level + Paused          byte: 1 while the player has paused (Space), 0 while it runs. The speed stays
+//                           as it was (found 2026-10-20 by diffing memory across three pauses)
 //   [Level + RoomsBegin]    the first element of its vector of rooms: the city (IsoRoom)
 //   [room]                  the IsoRoom vtable, exe + RoomVtable (checks we got a city)
 //   room + Speed            float: the simulation speed, 0 while paused
@@ -24,6 +26,8 @@ namespace CpcMultiplayer;
 internal class NativeLayout
 {
 	public const long RoomsBegin = 0x10;
+
+	public const long Paused = 0x8;
 
 	public const long Speed = 0x48c;
 

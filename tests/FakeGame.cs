@@ -27,7 +27,9 @@
 //   lock <value>          the player ticked "apply to all" for parking prices at that value: from then on
 //                         every tick copies the stored price onto every entrance, like the game. The stored
 //                         price sits in native memory as the game's map node would hold it ("parking" as a
-//                         short std::string, then a float), unless FAKEGAME_LOCK_HIDDEN=1.
+//                         short std::string, then a float), unless FAKEGAME_LOCK_HIDDEN=1. With FAKEGAME_LOCK_TABLE=1
+//                         it's a bare float among other prices, as the game build checked keeps them (a table by
+//                         pricing id).
 // The money lives in native memory like the game's, so the helper has to find it by scanning this
 // process (inbox "moneymark") and reads or writes it there. Inbox "spend" charges it.
 // The speed sits in native memory behind the game's pointer chain (Level -> rooms[0] -> room+0x48c, see
@@ -167,14 +169,23 @@ internal static class FakeGame
 		Marshal.WriteInt64(p, BitConverter.DoubleToInt64Bits(v));
 	}
 
+	// Like the game: pausing sets the Level's paused byte (+0x8) and leaves the speed float as it was.
 	private static float GetSpeed()
 	{
+		if (Marshal.ReadByte(levelMem, 0x8) == 1)
+		{
+			return 0f;
+		}
 		return BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(roomMem, SpeedOffset)), 0);
 	}
 
 	private static void SetSpeed(float v)
 	{
-		Marshal.WriteInt32(roomMem, SpeedOffset, BitConverter.ToInt32(BitConverter.GetBytes(v), 0));
+		if (v > 0f)
+		{
+			Marshal.WriteInt32(roomMem, SpeedOffset, BitConverter.ToInt32(BitConverter.GetBytes(v), 0));
+		}
+		Marshal.WriteByte(levelMem, 0x8, (byte)(v > 0f ? 0 : 1));
 		speedSeen = v;
 	}
 
@@ -187,6 +198,8 @@ internal static class FakeGame
 	{
 		Marshal.WriteInt64(levelPtrCell, 0L);
 		Marshal.WriteInt64(levelMem, 0x10, roomsMem.ToInt64());
+		Marshal.WriteByte(levelMem, 0x8, 0);
+		Marshal.WriteInt32(roomMem, SpeedOffset, BitConverter.ToInt32(BitConverter.GetBytes(1f), 0));
 		Marshal.WriteInt64(roomsMem, roomMem.ToInt64());
 		Marshal.WriteInt64(roomMem, vtableMem.ToInt64());
 		Marshal.WriteInt64(roomMem, 0x598, statsSysMem.ToInt64());
@@ -260,13 +273,22 @@ internal static class FakeGame
 		}
 		if (!lockHidden)
 		{
-			byte[] name = Encoding.ASCII.GetBytes("parking");
-			for (int i = 0; i < name.Length; i++)
+			if (Environment.GetEnvironmentVariable("FAKEGAME_LOCK_TABLE") == "1")
 			{
-				Marshal.WriteByte(lockMem, 0x10 + i, name[i]);
+				// Other kinds' prices around it, no name.
+				Marshal.WriteInt32(lockMem, 0x2c, BitConverter.ToInt32(BitConverter.GetBytes(2.23f), 0));
+				Marshal.WriteInt32(lockMem, 0x34, BitConverter.ToInt32(BitConverter.GetBytes(9.5f), 0));
 			}
-			Marshal.WriteInt64(lockMem, 0x20, name.Length);
-			Marshal.WriteInt64(lockMem, 0x28, 15);
+			else
+			{
+				byte[] name = Encoding.ASCII.GetBytes("parking");
+				for (int i = 0; i < name.Length; i++)
+				{
+					Marshal.WriteByte(lockMem, 0x10 + i, name[i]);
+				}
+				Marshal.WriteInt64(lockMem, 0x20, name.Length);
+				Marshal.WriteInt64(lockMem, 0x28, 15);
+			}
 			Marshal.WriteInt32(lockMem, 0x30, BitConverter.ToInt32(BitConverter.GetBytes((float)v), 0));
 		}
 		foreach (string key in prices.Keys.ToList())

@@ -741,6 +741,15 @@ function Scenario-PriceLockedAtHost {
     Expect-Latest "the next change goes straight in" $s.h $K2 "0.5"
 }
 
+function Scenario-PriceLockedTable {
+    # As in the game build checked: the stored price is a bare float in a table of prices, with no name by it.
+    $s = Start-LockedHost @{ FAKEGAME_LOCK_TABLE = "1" }
+    Game $s.c "price $K1 0.4"
+    Expect "host finds the stored price by its value" { HelperLog $s.h } "found the game's stored price for parking" 1 40
+    Expect-Latest "host's other entrance follows" $s.h $K2 "0.4"
+    Expect-Latest "client keeps its price" $s.c $K1 "0.4"
+}
+
 function Scenario-PriceLockedHidden {
     # The stored price can't be found: the host's price stands, and the host is told why.
     $s = Start-LockedHost @{ FAKEGAME_LOCK_HIDDEN = "1" }
@@ -960,7 +969,7 @@ $scenarios = @("HelperUnits", "LuaSync",
     "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
     "StatsHostToClient", "CarsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
-    "PriceLockedAtHost", "PriceLockedHidden")
+    "PriceLockedAtHost", "PriceLockedTable", "PriceLockedHidden")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }
