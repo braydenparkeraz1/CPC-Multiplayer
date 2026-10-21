@@ -89,6 +89,9 @@ internal class TileSync : IDisposable
 
 	public string Size => $"{sx}x{sy}x{sz}";
 
+	// For the developer console (DevMemory "tiles").
+	public string Describe => $"map {Size}, tiles at {tilesAddr:x}, shadow {shadowAddr:x}, heights {heightAddr:x}, land {landAddr:x} ({(LandActive ? "synced" : "not found")}); {Status}";
+
 	// Sets the map size (x and z across, y up). Returns false for sizes that can't be a tile map.
 	public bool SetSize(int x, int y, int z)
 	{

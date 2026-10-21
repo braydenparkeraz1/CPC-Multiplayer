@@ -264,6 +264,12 @@ internal partial class Session
 		case "settings":
 			OnHostSettings(m);
 			break;
+		case "speed":
+			OnHostSpeed(m);
+			break;
+		case "clock":
+			OnHostClock(m);
+			break;
 		case "money":
 			OnHostMoney(m);
 			break;
@@ -303,9 +309,11 @@ internal partial class Session
 			return;
 		}
 		string template = BuildEvent.Template(key);
+		// The host's words; only shown, never parsed.
+		string reason = BlockReason.Clean(Util.Str(m, "reason")) ?? "something is in the way there";
 		if (unconfirmed.Remove(key))
 		{
-			Ui.Warn($"Your {template} overlapped something in the host's city, so it was taken back.");
+			Ui.Warn($"Your {template} couldn't be placed in the host's city ({reason}), so it was taken back.");
 			RefundUndoneBuild(key);
 		}
 		else

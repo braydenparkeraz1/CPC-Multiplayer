@@ -14,11 +14,13 @@ internal partial class Session
 {
 	private static readonly TimeSpan SpendHold = TimeSpan.FromSeconds(1.5);
 
-	private static readonly TimeSpan MoneyWriteInterval = TimeSpan.FromSeconds(0.25);
+	// Every pass of the main loop: our own game's income and upkeep shouldn't show between writes.
+	private static readonly TimeSpan MoneyWriteInterval = TimeSpan.FromSeconds(0.05);
 
-	private static readonly TimeSpan MoneyInterval = TimeSpan.FromSeconds(2.0);
+	// Host: the balance goes out when it changes, at most this often.
+	private static readonly TimeSpan MoneyInterval = TimeSpan.FromSeconds(0.2);
 
-	private static readonly TimeSpan MoneyKeepAlive = TimeSpan.FromSeconds(10.0);
+	private static readonly TimeSpan MoneyKeepAlive = TimeSpan.FromSeconds(5.0);
 
 	private static readonly TimeSpan MoneyRetry = TimeSpan.FromSeconds(60.0);
 
@@ -53,6 +55,9 @@ internal partial class Session
 	// moment before its event (place, tiles, land) tells us about it, so the drop isn't undone at once.
 	private DateTime moneyDropSeen = DateTime.MinValue;
 
+	// Client: what we last wrote into our game's money.
+	private double? moneyLastWritten;
+
 	// Client: the host's last balance, and our spends it hasn't applied yet (id -> amount).
 	private double? hostMoney;
 
@@ -81,6 +86,7 @@ internal partial class Session
 		lastMoneyAttempt = DateTime.MinValue;
 		moneyAnnounced = false;
 		moneyWasSearching = false;
+		moneyLastWritten = null;
 		spendsQueued.Clear();
 		spendsInFlight.Clear();
 	}
@@ -91,6 +97,8 @@ internal partial class Session
 		spendsPending.Clear();
 		unconfirmedCharges.Clear();
 		hostMoney = null;
+		moneyLastWritten = null;
+		moneyDropSeen = DateTime.MinValue;
 	}
 
 	private void MoneyTick()
@@ -281,23 +289,26 @@ internal partial class Session
 			return;
 		}
 		double gap = target - current.Value;
-		if (gap > 1.0)
+		bool holdExpired = moneyDropSeen != DateTime.MinValue && DateTime.UtcNow - moneyDropSeen >= SpendHold;
+		MoneyFollow.Action action = MoneyFollow.Decide(target, current.Value, moneyLastWritten, holdExpired);
+		if (action == MoneyFollow.Action.Hold)
 		{
 			if (moneyDropSeen == DateTime.MinValue)
 			{
 				moneyDropSeen = DateTime.UtcNow;
 			}
-			if (DateTime.UtcNow - moneyDropSeen < SpendHold)
-			{
-				return;
-			}
+			return;
+		}
+		if (holdExpired && action == MoneyFollow.Action.Write)
+		{
 			// Nothing explained it: our own simulation's costs, which the host's balance replaces.
 			Ui.Log($"our game spent {gap:0.##} that no build explains; undone");
 		}
 		moneyDropSeen = DateTime.MinValue;
-		if (Math.Abs(gap) > 0.005)
+		if (action == MoneyFollow.Action.Write)
 		{
 			money.Write(target);
+			moneyLastWritten = target;
 			moneyWrites++;
 			moneyWritten += Math.Abs(gap);
 			if (Math.Abs(gap) >= 1000.0)
@@ -318,7 +329,9 @@ internal partial class Session
 			Ui.Log(reason + " " + key + " not charged: our money isn't known yet");
 			return 0.0;
 		}
-		double gap = hostMoney.Value - spendsPending.Values.Sum() - current.Value;
+		// Measured from what we last wrote, so the host's income since then doesn't count; only what our
+		// game took off in the moment since (a write every 50 ms, held while a purchase is pending).
+		double gap = (moneyLastWritten ?? hostMoney.Value - spendsPending.Values.Sum()) - current.Value;
 		if (gap > 1.0)
 		{
 			return SendSpend(Math.Round(gap, 2), reason, key);
@@ -408,6 +421,11 @@ internal partial class Session
 		}
 		long id = ++spendSeq;
 		spendsPending[id] = amount;
+		// Our game took it off what we last wrote; the next purchase is measured from there.
+		if (moneyLastWritten != null)
+		{
+			moneyLastWritten -= amount;
+		}
 		host.Send(Msg.Make("spend", "id", id, "amount", amount, "reason", reason, "key", key));
 		return amount;
 	}

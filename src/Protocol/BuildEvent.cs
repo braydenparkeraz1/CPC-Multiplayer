@@ -56,6 +56,11 @@ internal static class BuildEvent
 				}
 				ev[field] = value.Value;
 			}
+			// The builder's tool painted the floor under it; the copies do the same.
+			if (d.TryGetValue("paint", out object paint) && paint is bool b)
+			{
+				ev["paint"] = b;
+			}
 		}
 		return ev;
 	}

@@ -27,6 +27,9 @@ internal class Options
 	// Developer console: Lua in multiplayer/runtime/devcmd.txt is run in the game, results go to devout.txt.
 	public bool Dev;
 
+	// --dev-write: the developer memory console may also write (devmem.txt "write").
+	public bool DevWrite;
+
 	// A client sends its playtest log to the host (--no-share-log turns it off).
 	public bool ShareLog = true;
 
@@ -98,6 +101,10 @@ internal class Options
 				break;
 			case "--dev":
 				options.Dev = true;
+				break;
+			case "--dev-write":
+				options.Dev = true;
+				options.DevWrite = true;
 				break;
 			case "--no-share-log":
 				options.ShareLog = false;

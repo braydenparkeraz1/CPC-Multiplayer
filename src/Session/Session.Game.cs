@@ -95,7 +95,7 @@ internal partial class Session
 			OnReplayPlaced(Util.Str(d, "key"));
 			break;
 		case "blocked":
-			OnReplayBlocked(Util.Str(d, "key"));
+			OnReplayBlocked(Util.Str(d, "key"), Util.Str(d, "reason"));
 			break;
 		case "painted":
 			OnPainted(d);
@@ -114,6 +114,12 @@ internal partial class Session
 			break;
 		case "settings":
 			OnGameSettings(d);
+			break;
+		case "settingrevert":
+			OnSettingRevert(d);
+			break;
+		case "typevalue":
+			priceMap.OnTypeValue(Util.Int(d, "req") ?? 0, Util.Int(d, "count") ?? 0, Util.Double(d, "min"), Util.Double(d, "max"));
 			break;
 		case "moneymark":
 			if (Util.Int(d, "mark") is long markId && Util.Int(d, "step") is long markStep)
@@ -174,6 +180,10 @@ internal partial class Session
 	private void OnHeartbeat(Dictionary<string, object> d)
 	{
 		lastHeartbeat = DateTime.UtcNow;
+		if (Util.Double(d, "sim") is double sim)
+		{
+			OnSimTime(sim);
+		}
 		bool paused = Msg.Bool(d, "paused");
 		if (paused != gamePaused)
 		{
@@ -200,6 +210,8 @@ internal partial class Session
 		settingsToGame.Clear();
 		gameSettingSeq = 0;
 		ResetMoney();
+		ResetSpeed();
+		ResetPriceMap();
 		if (IsHost && wasInCity)
 		{
 			HostLeftCity();
@@ -272,6 +284,7 @@ internal partial class Session
 		}
 		gameReady = true;
 		SetMapSize(Util.Dict(d, "map"));
+		SendPricingNames();
 		if (role == Role.Lobby)
 		{
 			Ui.Log("city ready in the lobby, not shared");
@@ -351,6 +364,7 @@ internal partial class Session
 			return;
 		}
 		Ui.Player(BuildEvent.Describe(opts.Name, ev));
+		NoteConstruction(ev);
 		if (IsHost)
 		{
 			// The host's city is the truth: its builds go straight to everyone.
@@ -388,7 +402,7 @@ internal partial class Session
 	}
 
 	// A build from another player didn't fit in our game, even after a few tries.
-	private void OnReplayBlocked(string key)
+	private void OnReplayBlocked(string key, string reason)
 	{
 		if (key == null)
 		{
@@ -396,18 +410,19 @@ internal partial class Session
 		}
 		if (IsHost)
 		{
-			ResolveProposal(key, accepted: false);
+			ResolveProposal(key, accepted: false, BlockReason.Describe(reason));
 		}
 		else
 		{
 			// Something only we have is in the way; the next drift check finds and repairs it.
-			Ui.Log("couldn't place " + key + " yet, leaving it to the drift check");
+			Ui.Log("couldn't place " + key + " yet (" + (reason ?? "no reason given") + "), leaving it to the drift check");
 		}
 	}
 
 	// Sends (or queues) a message for the mod in our game.
 	private void DeliverToGame(Dictionary<string, object> msg)
 	{
+		NoteConstruction(msg);
 		toGame.Add(msg);
 		FlushToGame();
 	}

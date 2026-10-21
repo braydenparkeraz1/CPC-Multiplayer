@@ -26,6 +26,7 @@ namespace CpcMultiplayer;
 //   Session.Prices.cs    prices and other player-set values, the host's table being the truth
 //   Session.Money.cs     one wallet (the host's): reading and writing it, friends' spends
 //   Session.Lan.cs       announcing our game on the network, and finding others' for the menu
+//   Session.Speed.cs     pause and game speed (in the game's memory), and keeping the clocks together
 //   Session.Commands.cs  console and control-file commands
 //   Session.Log.cs       the playtest log: snapshots of all of the above, players' notes
 internal partial class Session
@@ -98,6 +99,7 @@ internal partial class Session
 			_ => Role.Lobby,
 		};
 		inbox = new Inbox(gameDir, sessionId);
+		SetUpPriceMap();
 	}
 
 	private void Post(Action action)
@@ -162,7 +164,8 @@ internal partial class Session
 		if (opts.Dev)
 		{
 			StartBackground(ReadDevCommands);
-			Ui.Warn("Developer console on: Lua in " + DevPath("devcmd.txt") + " runs in the game.");
+			StartBackground(ReadDevMemCommands);
+			Ui.Warn("Developer console on: Lua in " + DevPath("devcmd.txt") + " runs in the game; memory commands in " + DevPath("devmem.txt") + (opts.DevWrite ? " (may write)." : " (read only)."));
 		}
 		if (role != Role.Lobby)
 		{
@@ -242,6 +245,14 @@ internal partial class Session
 		catch (Exception ex)
 		{
 			Ui.Log("money sync error: " + ex);
+		}
+		try
+		{
+			SpeedTick();
+		}
+		catch (Exception ex)
+		{
+			Ui.Log("speed sync error: " + ex);
 		}
 		TileTick();
 		DriftTick();
@@ -327,6 +338,7 @@ internal partial class Session
 		settingsToGame.Clear();
 		settingsSentAt.Clear();
 		ClearClientMoney();
+		ResetSpeed();
 		ResetDrift();
 	}
 
@@ -403,6 +415,8 @@ internal partial class Session
 		CloseFriendLogs();
 		tiles.AbandonAnchors();
 		tiles.Dispose();
+		priceMap.Dispose();
+		speed.Dispose();
 		inbox.Delete();
 		if (!IsHost && !game.Running)
 		{

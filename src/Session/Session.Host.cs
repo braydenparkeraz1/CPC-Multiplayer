@@ -232,6 +232,9 @@ internal partial class Session
 		case "spend":
 			OnPeerSpend(p, m);
 			break;
+		case "speed":
+			OnPeerSpeed(p, m);
+			break;
 		case "note":
 			OnNote(m, p);
 			break;
@@ -291,14 +294,15 @@ internal partial class Session
 	}
 
 	// Our game placed a friend's build, or couldn't.
-	private void ResolveProposal(string key, bool accepted)
+	// reason: why our game couldn't place it, in words, if it said.
+	private void ResolveProposal(string key, bool accepted, string reason = null)
 	{
 		if (!proposals.TryGetValue(key, out Proposal proposal))
 		{
 			return;
 		}
 		proposals.Remove(key);
-		PlayLog.Write("log", $"{proposal.From.Name}'s {key} {(accepted ? "fits" : "doesn't fit")} in our city, after {(DateTime.UtcNow - proposal.At).TotalSeconds:0.0}s");
+		PlayLog.Write("log", $"{proposal.From.Name}'s {key} {(accepted ? "fits" : "doesn't fit")} in our city, after {(DateTime.UtcNow - proposal.At).TotalSeconds:0.0}s{(reason != null ? " (" + reason + ")" : "")}");
 		if (accepted)
 		{
 			proposal.From.Send(Msg.Make("ok", "key", key));
@@ -306,14 +310,14 @@ internal partial class Session
 		}
 		// Something in our city is in the way (usually a build of ours, or another friend's,
 		// that got there first). Our city decides: the build is taken back everywhere.
-		Ui.Warn($"{proposal.From.Name}'s {BuildEvent.Template(key)} didn't fit in your city, so it was taken back.");
+		Ui.Warn($"{proposal.From.Name}'s {BuildEvent.Template(key)} didn't fit in your city ({reason ?? "something is in the way"}), so it was taken back.");
 		sharedSettings.Remove(key);
 		changeLog.AddObject(new Dictionary<string, object>
 		{
 			{ "type", "demolish" },
 			{ "key", key }
 		});
-		Broadcast(Msg.Make("undo", "key", key, "name", proposal.From.Name), null);
+		Broadcast(Msg.Make("undo", "key", key, "name", proposal.From.Name, "reason", reason), null);
 	}
 
 	private void ExpireProposals()

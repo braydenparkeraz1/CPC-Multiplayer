@@ -16,6 +16,10 @@ local WHITELIST = {
 
 local SCAN_PER_TICK = 200      -- tracked objects re-read per tick for local changes
 local PENDING_TICKS = 300      -- values for objects that don't exist here yet wait ~30 s for them
+-- After we write a value, a change this soon is the game's doing, not our player's: with "apply to all"
+-- ticked for that kind of price, the game copies its one stored price (money.syncedPrices) back onto
+-- every object of the kind. Reported as "settingrevert", never as the player's edit.
+local REVERT_TICKS = 5
 
 S.setLast = S.setLast or {}          -- key -> { ["Component.field"] = value } as last seen or applied
 S.setList = S.setList or {}          -- tracked keys, scanned round-robin
@@ -24,6 +28,8 @@ S.setTracked = S.setTracked or {}    -- key -> true
 S.setPending = S.setPending or {}    -- key -> { fields = {...}, untilTick = n }
 S.setProtect = S.setProtect or {}    -- key -> { seq = n, fields = {...} } (our own recent edits)
 S.setSeq = S.setSeq or 0             -- numbers our "setting" reports; the helper echoes the newest as "seen"
+S.setApplied = S.setApplied or {}    -- key -> { ["Component.field"] = { value = v, tick = n } } we wrote lately
+S.pricingNames = S.pricingNames or {} -- Pricing.syncId -> its name ("restroom", "fries_stall", ...)
 
 -- Float fields come back as float32 values, so compare loosely.
 local function same(a, b)
@@ -68,6 +74,17 @@ local function write(e, name, value)
     return (pcall(function() comp.getFor(e)[field] = value end))
 end
 
+-- The kind of price an object has, as the game names it in money.syncedPrices: "parking" for
+-- entrances, and the name behind Pricing.syncId (from the helper's "pricingids") for the rest.
+local function priceType(e)
+    if component.ParkingEntry and component.ParkingEntry.has(e) then return "parking" end
+    if component.Pricing and component.Pricing.has(e) then
+        local ok, id = pcall(function() return component.Pricing.getFor(e).syncId end)
+        if ok and id ~= nil then return S.pricingNames[id] or ("id" .. tostring(id)) end
+    end
+    return nil
+end
+
 -- A value the helper wrote before it had our own later edit of that field ("seen" is the newest
 -- of our reports it had). It's older than the edit, so the edit stays. Anything written after
 -- that is newer than the edit and applies, even while the edit is fresh.
@@ -92,6 +109,9 @@ local function applyTo(key, fields, seen)
             if not same(current[name], value) then
                 -- Recorded first, so the next scan doesn't report it back as a local change.
                 last[name] = value
+                local applied = S.setApplied[key] or {}
+                applied[name] = { value = value, tick = S.tick }
+                S.setApplied[key] = applied
                 local ok = write(e, name, value)
                 MP.trace("price applied", { key = key, field = name, from = current[name], to = value, ok = ok })
             else
@@ -123,6 +143,7 @@ local function untrack(key)
     S.setLast[key] = nil
     S.setPending[key] = nil
     S.setProtect[key] = nil
+    S.setApplied[key] = nil
 end
 
 -- Called by sync.lua as objects get indexed and dropped.
@@ -149,11 +170,26 @@ local function scan()
             local now = read(e)
             if now then
                 local last = S.setLast[key] or {}
+                local applied = S.setApplied[key]
                 local changed
                 for name, value in pairs(now) do
+                    local mine = applied and applied[name]
+                    if mine and S.tick - mine.tick > REVERT_TICKS then
+                        applied[name] = nil
+                        mine = nil
+                    end
                     if not same(last[name], value) then
-                        changed = changed or {}
-                        changed[name] = value
+                        if mine and same(value, mine.value) then
+                            -- What we wrote, taking effect late (e.g. the helper changed the game's stored price).
+                        elseif mine then
+                            -- The game put back its own value: not our player's edit.
+                            local kind = priceType(e)
+                            MP.trace("price undone by the game", { key = key, field = name, ours = mine.value, game = value, kind = kind })
+                            MP.emit("settingrevert", { key = key, field = name, value = value, wanted = mine.value, kind = kind })
+                        else
+                            changed = changed or {}
+                            changed[name] = value
+                        end
                     end
                 end
                 S.setLast[key] = now
@@ -212,6 +248,37 @@ end
 
 MP.handlers["settings?"] = function()
     MP.emit("settings", { entries = snapshot(), full = true })
+end
+
+-- { names = { "restroom", "soda_vending", ... } }: the price kinds the helper found in the game's scripts.
+MP.handlers.pricingids = function(msg)
+    local lookup = getPricingId
+    if type(lookup) ~= "function" then return end
+    for _, name in ipairs(msg.names or {}) do
+        if type(name) == "string" then
+            local ok, id = pcall(lookup, name)
+            if ok and id ~= nil then S.pricingNames[id] = name end
+        end
+    end
+end
+
+-- { req = n, kind = "parking", field = "ParkingEntry.ratePerMinute" }: every object of one kind's value,
+-- so the helper can tell whether a change it made to the game's stored price took.
+MP.handlers["typevalue?"] = function(msg)
+    local count, lo, hi = 0, nil, nil
+    for key in pairs(S.setTracked) do
+        local e = S.byKey[key]
+        if e and valid(e) and priceType(e) == msg.kind then
+            local values = read(e)
+            local v = values and values[msg.field]
+            if type(v) == "number" then
+                count = count + 1
+                lo = lo and math.min(lo, v) or v
+                hi = hi and math.max(hi, v) or v
+            end
+        end
+    end
+    MP.emit("typevalue", { req = msg.req, kind = msg.kind, count = count, min = lo, max = hi })
 end
 
 MP.settingsTick = function()

@@ -138,6 +138,37 @@ test("a blocked build is retried, then reported blocked", function()
     eq(#w:take("placed"), 0, "never placed")
 end)
 
+test("a blocked build says why", function()
+    local w = city()
+    w:spawnPlaced("Rock", 4, 1, 4)
+    w:step()
+    w:send(placeMsg("Bench@4,1,4/0/0"))
+    w:step(40)
+    local blocked = w:take("blocked")
+    eq(#blocked, 1, "blocked once")
+    eq(blocked[1].reason, "PLACE_BLOCK_OCCUPIED_BY_INCOMPATIBLE_PLACEABLE", "the game's reason")
+    eq(w:objectAt(4, 1, 4) ~= nil, true, "the rock is still there")
+end)
+
+test("the build tool's floor painting goes with a build and is used by the replay", function()
+    local a = city()
+    a:playerBuild("House", 5, 1, 7, 0, 0, true)
+    a:step()
+    local place = a:take("place")[1]
+    eq(place.paint, true, "paint reported")
+    local b = city()
+    local msg = placeMsg(place.key)
+    msg.paint = place.paint
+    b:send(msg)
+    local e = b.MP.room.placing[place.key].entity
+    eq(b.comps.Placing[e].bAutoPaintFloor, true, "the replay paints the floor too")
+    b:step(10)
+    eq(b:keyAt(5, 1, 7), place.key, "placed")
+    a:playerBuild("Bench", 9, 1, 9)
+    a:step()
+    eq(a:take("place")[1].paint, nil, "no setting, nothing sent")
+end)
+
 test("a blocked build waits for a removal in progress", function()
     local w = city({ { "Rock", 4, 1, 4 } })
     w.demolishAfter = 60 -- a slow demolition animation
