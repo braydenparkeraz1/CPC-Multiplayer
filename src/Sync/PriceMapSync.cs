@@ -21,6 +21,12 @@ namespace CpcMultiplayer;
 //     kind ("typevalue?"): the stored price is the one the game then copies everywhere. A candidate
 //     that doesn't take is put back.
 // Only names of up to 15 characters can be found this way (longer ones live elsewhere on the heap).
+//
+// In the game build checked (2026-10-20) none is found that way: the stored prices are a table of floats,
+// one per kind, in the order of getPricingId (car carousel 1, fries sauce 2, ...). So when the name finds
+// nothing, every float in writable memory holding exactly the price the game copies (ByValue) is a
+// candidate, tried the same way. A ByValue candidate is only written while it still holds what was
+// found there or what we wrote, so a reused address is left alone.
 internal class PriceMapSync : IDisposable
 {
 	private const int MaxCandidates = 64;
@@ -47,6 +53,13 @@ internal class PriceMapSync : IDisposable
 		public long Address;
 
 		public bool IsDouble;
+
+		public bool ByValue;
+
+		// ByValue: the bytes found there, and the last ones we wrote.
+		public byte[] Found;
+
+		public byte[] Wrote;
 	}
 
 	private class Kind
@@ -296,15 +309,34 @@ internal class PriceMapSync : IDisposable
 		return Math.Abs(a - b) <= 1e-4 * Math.Max(1.0, Math.Max(Math.Abs(a), Math.Abs(b)));
 	}
 
-	// Writes a price, after checking the name is still right in front of it.
+	// Writes a price, after checking the name is still right in front of it (or, for a candidate found
+	// by its value, that it still holds what was found or what we last wrote).
 	private bool Write(Kind k, Candidate c, double value)
 	{
-		if (process == IntPtr.Zero || c == null || !NameAt(c.Address - 0x20, k.Name))
+		if (process == IntPtr.Zero || c == null)
 		{
 			return false;
 		}
 		byte[] buf = c.IsDouble ? BitConverter.GetBytes(value) : BitConverter.GetBytes((float)value);
-		return Native.WriteProcessMemory(process, (IntPtr)c.Address, buf, (IntPtr)buf.Length, out IntPtr written) && written.ToInt64() == buf.Length;
+		if (c.ByValue)
+		{
+			byte[] now = new byte[buf.Length];
+			if (!Native.ReadProcessMemory(process, (IntPtr)c.Address, now, (IntPtr)now.Length, out IntPtr got) || got.ToInt64() != now.Length
+				|| !(now.SequenceEqual(c.Found) || (c.Wrote != null && now.SequenceEqual(c.Wrote))))
+			{
+				return false;
+			}
+		}
+		else if (!NameAt(c.Address - 0x20, k.Name))
+		{
+			return false;
+		}
+		bool ok = Native.WriteProcessMemory(process, (IntPtr)c.Address, buf, (IntPtr)buf.Length, out IntPtr written) && written.ToInt64() == buf.Length;
+		if (ok)
+		{
+			c.Wrote = buf;
+		}
+		return ok;
 	}
 
 	private bool NameAt(long addr, string name)
@@ -366,6 +398,39 @@ internal class PriceMapSync : IDisposable
 					if (found.Count > MaxCandidates)
 					{
 						return found;
+					}
+				}
+			}
+		}
+		return found.Count > 0 ? found : ScanByValue(value);
+	}
+
+	// Every 4-aligned float in writable memory that is exactly the price (as the game holds it, a float).
+	private List<Candidate> ScanByValue(double value)
+	{
+		byte[] want = BitConverter.GetBytes((float)value);
+		List<Candidate> found = new List<Candidate>();
+		const int Chunk = 4 << 20;
+		byte[] buf = new byte[Chunk];
+		foreach (KeyValuePair<long, long> region in WritableRegions())
+		{
+			for (long off = 0; off < region.Value; off += Chunk)
+			{
+				int len = (int)Math.Min(buf.Length, region.Value - off);
+				if (!Native.ReadProcessMemory(process, (IntPtr)(region.Key + off), buf, (IntPtr)len, out IntPtr read))
+				{
+					continue;
+				}
+				int n = (int)read.ToInt64();
+				for (int i = 0; i + 4 <= n; i += 4)
+				{
+					if (buf[i] == want[0] && buf[i + 1] == want[1] && buf[i + 2] == want[2] && buf[i + 3] == want[3])
+					{
+						found.Add(new Candidate { Address = region.Key + off + i, ByValue = true, Found = (byte[])want.Clone() });
+						if (found.Count > MaxCandidates)
+						{
+							return found;
+						}
 					}
 				}
 			}

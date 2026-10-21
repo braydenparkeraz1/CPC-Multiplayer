@@ -40,7 +40,9 @@ What is shared:
 | Parking and shop prices | The host's value wins; anyone can change them, also with "apply to all" ticked (0.4.0, 0.5.0) |
 | Money | One wallet, the host's. Everyone's builds are paid from it (0.4.0) |
 | Pause, game speed, day and time | Anyone pauses or changes the speed for everyone; clocks are kept together (0.5.0) |
-| Cars, people, protests, and the statistics that come from them (carbrainness, civil unrest, car dependency) | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
+| City statistics: carbrainness, civil unrest, need fulfilment, car dependency progress | The host's, on every HUD (0.5.0) |
+| Who owns which car (and so the car dependency level) | The host's: friends' games give and take real cars to match (0.5.0) |
+| Cars, people and protests themselves | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
 
 ## Build
 
@@ -179,6 +181,8 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
   host last wins everywhere.
   - Lua can't see or set the speed, and the mod's Lua doesn't run while paused. So the helper reads and writes it
     in the game's memory (`src/Sync/SpeedSync.cs`), every 50 ms, paused or not.
+  - Pausing (Space) doesn't change the speed: it sets a flag in the game's Level (`Level + 0x8`, 1 while paused),
+    found by diffing memory across three pauses. The helper reads and writes both, 0 meaning paused.
   - Where it lives was found by disassembling the game, so it only works with the game build it was found in
     (checked by the exe's SHA-256, `src/Sync/NativeLayout.cs`). With another build the helper says "Pause and game
     speed aren't shared" and everything else works as before.
@@ -199,7 +203,14 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
     followed by the price, checked by writing the friend's price and seeing every object take it) and changes it.
   - If it can't be found, the host's price stands and the player whose game holds it is told to untick
     "apply to all".
-  - Ticking or unticking the box itself is still each player's own.
+  - The boxes themselves are shared too, and so is each kind's stored price: in the game build checked they are two
+    vectors in the city room, one bit and one float per kind in pricing-id order (`room + 0x400`: the boxes as a
+    `std::vector<bool>`, `room + 0x420`: the prices), found 2026-10-20 and checked by ticking a box from outside.
+    Each helper reads its game's every 0.25 s and sends a change on; the others write it in, last change wins (like
+    pause and speed). The games then copy the stored price onto their objects themselves
+    (`src/Sync/ApplyToAllSync.cs`, `src/Session/Session.ApplyToAll.cs`).
+  - With another game build the helper falls back to the stored-price search above, by name and then by value
+    (`src/Sync/PriceMapSync.cs`), and the boxes stay each player's own.
 - **A friend's suburban home no longer fails in the host's city.** The house turns its plot to Dirt while it's
   built, and those floor changes reached the host before the house did. The house needs Grass, so the host's game
   refused it, and the Dirt left behind made every retry fail too.
@@ -209,6 +220,33 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
   - Builds carry the build tool's "paint the floor" setting (`paint`), and the copies use it.
   - When a build is taken back, the builder is told the game's reason ("the floor there is the wrong kind",
     "something else is already there") instead of always "overlapped something".
+- **City statistics are the host's.** Carbrainness, civil unrest, need fulfilment and the car dependency progress
+  (cars owned, parking spaces in high demand) come from each PC's own simulation of cars and people, which drift
+  apart: in a test the host showed 86% carbrainness and 79 car owners while the friend showed 58% and 38.
+  - Every 4 game seconds the game's Stats system adds a snapshot of them (224 bytes) to a list, and the HUD shows
+    the newest. `[city room + 0x598]` is the Stats system; its list is at `+0x48`.
+  - The host's helper sends its newest snapshot (`stats`) when it changes, and a friend's helper writes it over the
+    friend's own newest one, again for each new one (`src/Sync/StatsSync.cs`, `src/Session/Session.Stats.cs`). The
+    time, the balance and pointers in the snapshot stay the friend's own.
+  - Like pause and speed this needs the known game build; with another, the helper says so and the rest works.
+  - Only what the HUD shows follows the host; the car dependency level itself (`city room + 0x240`) levels up from
+    each game's own counts, which car ownership (below) keeps the same.
+- **Who owns which car is the host's.** People buy cars at a car carousel, in the engine (`system.VehicleShop.tryBuy`),
+  at other times on every PC, and car ownership drives the Car Dependency level. In a test the host had 79 owners and
+  the friend 38. Both games have the same people, by name, from the host's save.
+  - The host's mod (`lua/cars.lua`) reports every owner and the kind of car (`cars`), every 2 s when it changed. It
+    knows every car because every vehicle template sets its `Vehicle` component through `setComponents`, which
+    `lua/hooks.lua` watches.
+  - A friend's mod gives each of the host's owners the same kind of car, made like the game's own Lua makes one
+    (`applyTemplate`, `VehicleOwner`, `OwnedVehicle`), and takes back cars only it has. So the level follows from real
+    cars, not a number written over.
+  - It changes only people who are out of town (no position, not in a car), at most 20 per check, so no car vanishes
+    from under its driver; the rest wait for their next trip out of town.
+  - A friend's game sells no cars itself. The car-shopping behavior asks `system.VehicleShop.tryBuy`, a plain Lua table
+    of the room, and on a friend's game the mod's version of it says no. So the sale doesn't flash money that the host's
+    wallet never gets, and no car is taken back later; the host's buyers get theirs from the list above.
+  - Not covered: people who moved to town in the host's game only (newcomers are random on each PC) are counted and
+    skipped, and the carousel's stock on a friend's game stays as it was (it sells nothing there).
 - **Developer memory console.** With `--dev`, `multiplayer/runtime/devmem.txt` takes memory commands (`chain`,
   `tiles`, `read`, `find`, `save`/`diff`, and `write` with `--dev-write`), with results in `devmemout.txt`. They
   run in the helper, so they work while the game is paused. See `src/Sync/DevMemory.cs` and `docs/probes-0.5.md`.
@@ -216,9 +254,12 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
 ### Not shared yet
 
 Each PC still runs its own simulation of cars, people and protests. A joiner starts with the host's (they're in the
-save), but they drift apart from then on. Carbrainness (the citizens' average), price tolerance, car dependency and
-civil unrest all come from that simulation, so they drift apart too.
-- On a friend's PC this changes what citizens will pay at a booth, but not the money: the wallet is the host's.
+save), but they drift apart from then on. The statistics on the HUD are the host's (above), but the simulation
+underneath isn't:
+- A friend's own cars leave parking lots and pay at other times than the host's, so the friend sees income that the
+  host's wallet (the one that counts) doesn't have, and the balance jumps back.
+- What citizens will pay at a booth follows each PC's own simulation, but not the money: the wallet is the host's.
+- Protests start on each PC from the shared civil unrest and buildings, often in the same place, but with other people.
 - Land bought by a friend shows as owned when hovered and can be built on, but stays dark on the map, and eviction
   there says it isn't owned. The map overlay and the eviction check use state the game only updates through its own
   purchase code.
@@ -326,6 +367,9 @@ Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 | `src/Session/Session.Prices.cs` | Prices: our game's edits, the host's table and its broadcasts |
 | `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
 | `src/Session/Session.Speed.cs` | Pause and game speed, and keeping the clocks together |
+| `src/Session/Session.ApplyToAll.cs`, `src/Sync/ApplyToAllSync.cs` | "Apply to all": the boxes and stored prices, in the game's memory, last change wins |
+| `src/Session/Session.Cars.cs` | Who owns which car: the host's mod's list to every friend's mod |
+| `src/Session/Session.Stats.cs`, `src/Sync/StatsSync.cs` | City statistics: the host's newest snapshot over each friend's own |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
 | `src/Session/Session.Menu.cs`, `src/Invite.cs`, `src/Clipboard.cs`, `src/ConsoleWindow.cs` | The main menu's buttons: what they show and do; the host's invite and the addresses in copied text; the clipboard; hiding the console window |
 | `src/Session/Session.Lan.cs`, `src/Net/Lan.cs` | Games on the same network: announcing ours while hosting, the games heard lately for the menu's buttons; the message format and the UDP sockets |
@@ -349,9 +393,10 @@ Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 | `lua/boot.lua` | In-game bootstrap: loaded from the main menu and from every level; runs a 0.1 s tick, or a frame-driven one while paused |
 | `lua/inbox.lua` | Polls the inbox file, dispatches messages (`hello`, `loadworld`, `leave`, `eval`), acks |
 | `lua/util.lua` | JSON encoder; `MP.emit` prints `MP>{json}` to stdout |
-| `lua/hooks.lua` | Wraps `setComponents`/`setComponent` to see every new placeable entity |
+| `lua/hooks.lua` | Wraps `setComponents`/`setComponent` to see every new placeable entity, and every car |
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; keeps the digest of shared objects and repairs buckets; runs the repaint queue; reports the map size |
 | `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices, tells the game's "apply to all" undoing a price from the player's edits |
+| `lua/cars.lua` | Host: reports who owns which kind of car. Friend: gives and takes cars to match the host's list |
 | `lua/money.lua` | Marker transactions for finding the money; applies friends' spends on the host |
 | `lua/menu.lua` | The main menu's Host/Join buttons and status lines, as 3D letters in the menu's scene; a row too wide for the screen is drawn smaller |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
@@ -393,6 +438,9 @@ Anything else on the port is ignored.
 | `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). When it changes (at most every 0.2 s), at least every 5 s, and after `sync?` (0.4.0, 0.5.0) |
 | `speed` | both | Pause or game speed (`value`, 0 = paused). From a client with `seq`; from the host with `ack` (the newest `seq` from this client it applied) and `by` (who changed it, or null for a repeat). The host repeats it every 5 s and after `sync?` (0.5.0) |
 | `clock` | host → client | The host's game clock in simulation seconds (`sim`), every 2 s while it runs (0.5.0) |
+| `cars` | host → client | Who owns which car in the host's city: `owners`, name → car template. When it changes, and after `sync?` (0.5.0) |
+| `applytoall` | both | The "apply to all" boxes (`ticks`, bit i = pricing id i+1) and stored `prices`. From a client with `seq`; from the host with `ack` and `by` (who changed it). The host repeats it every 5 s and after `sync?` (0.5.0) |
+| `stats` | host → client | The host's newest city statistics snapshot: its game `time` and `data`, the 144 shared bytes in base64. When it changes (at most every 0.5 s), at least every 5 s (0.5.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
 `demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, `menu`, and `trace`, which only goes in the playtest log), and the

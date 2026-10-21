@@ -414,6 +414,8 @@ function Scenario-LuaSync {
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed" }
     & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\settings_test.lua") | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "Lua settings tests failed" }
+    & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\cars_test.lua") | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "Lua cars tests failed" }
 }
 
 # ---- 0.4.0 sync: the host decides, instant join, drift repair ----
@@ -739,6 +741,36 @@ function Scenario-PriceLockedAtHost {
     Expect-Latest "the next change goes straight in" $s.h $K2 "0.5"
 }
 
+function Scenario-PriceLockedTable {
+    # As in the game build checked: the stored price is a bare float in a table of prices, with no name by it.
+    $s = Start-LockedHost @{ FAKEGAME_LOCK_TABLE = "1" }
+    Game $s.c "price $K1 0.4"
+    Expect "host finds the stored price by its value" { HelperLog $s.h } "found the game's stored price for parking" 1 40
+    Expect-Latest "host's other entrance follows" $s.h $K2 "0.4"
+    Expect-Latest "client keeps its price" $s.c $K1 "0.4"
+}
+
+function Scenario-ApplyToAllShared {
+    # The boxes and stored prices are read and written in each game's memory: whoever ticks or moves one,
+    # every game follows, and the games copy the price onto their objects themselves.
+    $env = @{ CPC_TEST_LAYOUT = "speedlayout.txt"; FAKEGAME_ATA = "1" }
+    $s = Start-HostAndClient $env $env
+    Game $s.h "price $K1 0.06"
+    Game $s.h "price $K2 0.06"
+    Expect-Latest "client has the host's prices" $s.c $K2 "0.06"
+    Expect "client finds the boxes" { HelperLog $s.c } "apply to all: found the boxes and stored prices" 1 15
+    Game $s.h "lock 0.3"
+    Expect "client's box is ticked with the host's price" { GameLog $s.c } "ata parking ticked=1 stored=0\.3\r?\n" 1 10
+    Expect-Latest "client's entrances follow" $s.c $K1 "0.3"
+    Game $s.c "lock 0.5"
+    Expect "host takes the client's price" { GameLog $s.h } "ata parking ticked=1 stored=0\.5\r?\n" 1 10
+    Expect-Latest "host's entrances follow" $s.h $K2 "0.5"
+    Expect "host is told" { HelperLog $s.h } "Clienty changed which prices 'apply to all' covers|apply to all" 1 10
+    Game $s.h "unlock"
+    Expect "client's box is unticked too" { GameLog $s.c } "ata parking ticked=0 stored=0\.5\r?\n" 1 10
+    if ((HelperLog $s.c) -match "price map: ") { throw "the client searched for the stored price" }
+}
+
 function Scenario-PriceLockedHidden {
     # The stored price can't be found: the host's price stands, and the host is told why.
     $s = Start-LockedHost @{ FAKEGAME_LOCK_HIDDEN = "1" }
@@ -867,6 +899,39 @@ function Start-SpeedPair([hashtable]$clientExtra = @{}) {
     return $s
 }
 
+function Scenario-CarsHostToClient {
+    # The host's game says who owns which car; the client's game is told, and so is a client joining later.
+    $s = Start-HostAndClient
+    Game $s.h "buycar Ann BananaCar"
+    Game $s.h "buycar Bob Cabriolet"
+    Expect "client game gets the host's owners" { GameLog $s.c } "cars 2: Ann=BananaCar,Bob=Cabriolet" 1 10
+    Game $s.h "sellcar Ann"
+    Expect "a car the host's person lost goes" { GameLog $s.c } "cars 1: Bob=Cabriolet" 1 10
+    # The client's own purchase isn't sent anywhere.
+    Game $s.c "buycar Cy Cabriolet"
+    Start-Sleep -Seconds 2
+    if ((GameLog $s.h) -match "cars \d+: .*Cy=") { throw "the client's purchase reached the host's game" }
+    $c2 = New-GameDir "client2"
+    Start-Helper $c2 @("join", "127.0.0.1:$($s.port)", "--name", "Second") | Out-Null
+    Expect "a later joiner gets the list after loading" { GameLog $c2 } "cars 1: Bob=Cabriolet" 1 30
+}
+
+function Scenario-StatsHostToClient {
+    # Each game's own simulation gives other city statistics; the client's HUD shows the host's.
+    $s = Start-SpeedPair
+    Game $s.h "carbrain 0.8"
+    Game $s.c "carbrain 0.3"
+    Expect "host finds its statistics" { HelperLog $s.h } "stats: found the city statistics in the game's memory" 1 15
+    Expect "client shows the host's statistics" { HelperLog $s.c } "stats: showing the host's city statistics" 1 15
+    Expect "client's newest snapshot has the host's carbrainness" { GameLog $s.c } "stats carbrain=0\.8\r?\n" 1 15
+    # The client's game keeps adding its own (0.3) every 4 game seconds; each is overwritten again.
+    $before = [regex]::Matches((GameLog $s.c), "stats carbrain=0\.8\r?\n").Count
+    Expect "a later snapshot is overwritten too" { GameLog $s.c } "stats carbrain=0\.8\r?\n" ($before + 1) 15
+    Game $s.h "carbrain 0.6"
+    Expect "the host's new value follows" { GameLog $s.c } "stats carbrain=0\.6\r?\n" 1 15
+    if ((GameLog $s.h) -match "stats carbrain=0\.3") { throw "the host's statistics took the client's" }
+}
+
 function Scenario-SpeedHostToClient {
     $s = Start-SpeedPair
     Game $s.h "speed 3"
@@ -924,8 +989,8 @@ $scenarios = @("HelperUnits", "LuaSync",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
     "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
-    "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
-    "PriceLockedAtHost", "PriceLockedHidden")
+    "StatsHostToClient", "CarsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
+    "PriceLockedAtHost", "PriceLockedTable", "PriceLockedHidden", "ApplyToAllShared")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }

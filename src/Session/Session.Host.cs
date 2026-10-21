@@ -235,6 +235,9 @@ internal partial class Session
 		case "speed":
 			OnPeerSpeed(p, m);
 			break;
+		case "applytoall":
+			OnPeerApplyToAll(p, m);
+			break;
 		case "note":
 			OnNote(m, p);
 			break;

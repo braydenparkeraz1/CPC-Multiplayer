@@ -19,10 +19,21 @@
 //   money <value>         set the city's money (income or upkeep of our own simulation)
 //   click <id>            the player clicked a button on the main menu (lua/menu.lua), e.g. "click host"
 //   speed <value>         the player paused (0) or changed the game speed
+//   buycar <name> <kind>  someone in our city now owns a car of that kind; sellcar <name>: no longer. Like the host's
+//                         mod, the owners are then reported ("cars"); an inbox "cars" (a friend's game told the host's
+//                         owners) is logged as "cars <count>: <name>=<kind>,..."
+//   carbrain <value>      our own simulation's carbrainness, in the city statistics from the next snapshot on
+//                         (every 4 game seconds); the newest snapshot's is logged as "stats carbrain=<value>"
 //   lock <value>          the player ticked "apply to all" for parking prices at that value: from then on
 //                         every tick copies the stored price onto every entrance, like the game. The stored
 //                         price sits in native memory as the game's map node would hold it ("parking" as a
-//                         short std::string, then a float), unless FAKEGAME_LOCK_HIDDEN=1.
+//                         short std::string, then a float), unless FAKEGAME_LOCK_HIDDEN=1. With FAKEGAME_LOCK_TABLE=1
+//                         it's a bare float among other prices, as the game build checked keeps them (a table by
+//                         pricing id). With FAKEGAME_ATA=1 the box and the stored price are the game's two vectors in
+//                         the room (room+0x400: tick bits, room+0x420: prices; parking is pricing id 4), which
+//                         the helper reads and writes directly; changes to them are logged as
+//                         "ata parking ticked=<0|1> stored=<value>"
+//   unlock                the player unticked "apply to all" for parking
 // The money lives in native memory like the game's, so the helper has to find it by scanning this
 // process (inbox "moneymark") and reads or writes it there. Inbox "spend" charges it.
 // The speed sits in native memory behind the game's pointer chain (Level -> rooms[0] -> room+0x48c, see
@@ -102,7 +113,29 @@ internal static class FakeGame
 
 	private static readonly IntPtr roomsMem = Marshal.AllocHGlobal(16);
 
-	private static readonly IntPtr roomMem = Marshal.AllocHGlobal(0x500);
+	private static readonly IntPtr roomMem = Marshal.AllocHGlobal(0x700);
+
+	// The Stats system at [room + 0x598]: its "vtable", and at +0x48 a vector of 0xe0-byte snapshots that
+	// grows by one every 4 game seconds (moving when it's full, like a std::vector).
+	private static readonly IntPtr statsSysMem = Marshal.AllocHGlobal(0x60);
+
+	private static readonly IntPtr statsVtableMem = Marshal.AllocHGlobal(16);
+
+	private static IntPtr statsRecords = IntPtr.Zero;
+
+	private static int statsCount;
+
+	private static int statsCapacity;
+
+	private static double statsNextAt;
+
+	// Our own simulation's carbrainness (control "carbrain <value>") and the newest snapshot's, last logged.
+	private static float ownCarbrain = 0.5f;
+
+	private static float loggedCarbrain = float.NaN;
+
+	// Who owns which car in our city (name -> kind).
+	private static readonly SortedDictionary<string, string> carOwners = new SortedDictionary<string, string>(StringComparer.Ordinal);
 
 	private static readonly IntPtr vtableMem = Marshal.AllocHGlobal(16);
 
@@ -115,7 +148,20 @@ internal static class FakeGame
 	// "Apply to all" for parking: the stored price, as a map node (string "parking", float at +0x30).
 	private static readonly IntPtr lockMem = Marshal.AllocHGlobal(0x40);
 
-	private static bool locked;
+	private static bool lockedFlag;
+
+	// FAKEGAME_ATA=1: the room's "apply to all" vectors, 15 kinds like the game.
+	private static readonly bool ataMode = Environment.GetEnvironmentVariable("FAKEGAME_ATA") == "1";
+
+	private static readonly IntPtr ataWords = Marshal.AllocHGlobal(8);
+
+	private static readonly IntPtr ataPrices = Marshal.AllocHGlobal(15 * 4);
+
+	private const int ParkingIndex = 3;
+
+	private static string ataLogged;
+
+	private static bool locked => ataMode ? (Marshal.ReadInt32(ataWords) & (1 << ParkingIndex)) != 0 : lockedFlag;
 
 	private static bool lockHidden;
 
@@ -140,14 +186,23 @@ internal static class FakeGame
 		Marshal.WriteInt64(p, BitConverter.DoubleToInt64Bits(v));
 	}
 
+	// Like the game: pausing sets the Level's paused byte (+0x8) and leaves the speed float as it was.
 	private static float GetSpeed()
 	{
+		if (Marshal.ReadByte(levelMem, 0x8) == 1)
+		{
+			return 0f;
+		}
 		return BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(roomMem, SpeedOffset)), 0);
 	}
 
 	private static void SetSpeed(float v)
 	{
-		Marshal.WriteInt32(roomMem, SpeedOffset, BitConverter.ToInt32(BitConverter.GetBytes(v), 0));
+		if (v > 0f)
+		{
+			Marshal.WriteInt32(roomMem, SpeedOffset, BitConverter.ToInt32(BitConverter.GetBytes(v), 0));
+		}
+		Marshal.WriteByte(levelMem, 0x8, (byte)(v > 0f ? 0 : 1));
 		speedSeen = v;
 	}
 
@@ -160,18 +215,79 @@ internal static class FakeGame
 	{
 		Marshal.WriteInt64(levelPtrCell, 0L);
 		Marshal.WriteInt64(levelMem, 0x10, roomsMem.ToInt64());
+		Marshal.WriteByte(levelMem, 0x8, 0);
+		Marshal.WriteInt32(roomMem, SpeedOffset, BitConverter.ToInt32(BitConverter.GetBytes(1f), 0));
 		Marshal.WriteInt64(roomsMem, roomMem.ToInt64());
 		Marshal.WriteInt64(roomMem, vtableMem.ToInt64());
+		Marshal.WriteInt64(roomMem, 0x598, statsSysMem.ToInt64());
+		// "Apply to all": vector<bool> (word pointer, end, capacity, bit count) and vector<float>, 15 kinds.
+		Marshal.WriteInt64(ataWords, 0);
+		for (int i = 0; i < 15; i++)
+		{
+			Marshal.WriteInt32(ataPrices, i * 4, BitConverter.ToInt32(BitConverter.GetBytes(i == ParkingIndex ? 0.06f : 1f + i), 0));
+		}
+		Marshal.WriteInt64(roomMem, 0x400, ataWords.ToInt64());
+		Marshal.WriteInt64(roomMem, 0x408, (ataWords + 4).ToInt64());
+		Marshal.WriteInt64(roomMem, 0x410, (ataWords + 4).ToInt64());
+		Marshal.WriteInt64(roomMem, 0x418, 15);
+		Marshal.WriteInt64(roomMem, 0x420, ataPrices.ToInt64());
+		Marshal.WriteInt64(roomMem, 0x428, (ataPrices + 60).ToInt64());
+		Marshal.WriteInt64(roomMem, 0x430, (ataPrices + 60).ToInt64());
+		Marshal.WriteInt64(statsSysMem, statsVtableMem.ToInt64());
+		StatsSnapshot();
 		SetSpeed(1f);
 		string layout = Environment.GetEnvironmentVariable("CPC_TEST_LAYOUT");
 		if (!string.IsNullOrEmpty(layout))
 		{
-			File.WriteAllText(layout, "levelPtr " + levelPtrCell.ToString("x") + "\nroomVtable " + vtableMem.ToString("x") + "\n");
+			File.WriteAllText(layout, "levelPtr " + levelPtrCell.ToString("x") + "\nroomVtable " + vtableMem.ToString("x") +
+				"\nstatsVtable " + statsVtableMem.ToString("x") + (ataMode ? "\napplyToAll 1" : "") + "\n");
 		}
+	}
+
+	// Adds a snapshot like the game's Stats system: time, then our own carbrainness at +0x98.
+	private static void StatsSnapshot()
+	{
+		if (statsCount == statsCapacity)
+		{
+			int capacity = Math.Max(4, statsCapacity * 2);
+			IntPtr moved = Marshal.AllocHGlobal(capacity * 0xe0);
+			for (int i = 0; i < statsCount * 0xe0; i++)
+			{
+				Marshal.WriteByte(moved, i, Marshal.ReadByte(statsRecords, i));
+			}
+			if (statsRecords != IntPtr.Zero)
+			{
+				Marshal.FreeHGlobal(statsRecords);
+			}
+			statsRecords = moved;
+			statsCapacity = capacity;
+		}
+		IntPtr record = statsRecords + statsCount * 0xe0;
+		for (int i = 0; i < 0xe0; i += 4)
+		{
+			Marshal.WriteInt32(record, i, 0);
+		}
+		Marshal.WriteInt32(record, 0, (int)sim);
+		Marshal.WriteInt32(record, 0x98, BitConverter.ToInt32(BitConverter.GetBytes(ownCarbrain), 0));
+		statsCount++;
+		Marshal.WriteInt64(statsSysMem, 0x48, statsRecords.ToInt64());
+		Marshal.WriteInt64(statsSysMem, 0x50, (record + 0xe0).ToInt64());
+		Marshal.WriteInt64(statsSysMem, 0x58, (statsRecords + statsCapacity * 0xe0).ToInt64());
+	}
+
+	private static float LatestCarbrain()
+	{
+		IntPtr record = statsRecords + (statsCount - 1) * 0xe0;
+		return BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(record, 0x98)), 0);
 	}
 
 	private static double LockValue()
 	{
+		if (ataMode)
+		{
+			float stored = BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(ataPrices, ParkingIndex * 4)), 0);
+			return double.Parse(stored.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+		}
 		if (lockHidden)
 		{
 			return hiddenLock;
@@ -181,9 +297,46 @@ internal static class FakeGame
 		return double.Parse(f.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
 	}
 
+	// The game's vectors as the helper sees them, logged when they change.
+	private static void AtaTick()
+	{
+		if (!ataMode)
+		{
+			return;
+		}
+		string now = "ata parking ticked=" + (locked ? 1 : 0) + " stored=" + Num(LockValue());
+		if (now != ataLogged)
+		{
+			ataLogged = now;
+			Log(now);
+		}
+	}
+
+	private static void Unlock()
+	{
+		if (ataMode)
+		{
+			Marshal.WriteInt32(ataWords, Marshal.ReadInt32(ataWords) & ~(1 << ParkingIndex));
+		}
+		lockedFlag = false;
+		Log("unlocked parking");
+	}
+
 	private static void Lock(double v)
 	{
-		locked = true;
+		if (ataMode)
+		{
+			// The player ticks the box with this price: the stored price, then the bit.
+			Marshal.WriteInt32(ataPrices, ParkingIndex * 4, BitConverter.ToInt32(BitConverter.GetBytes((float)v), 0));
+			Marshal.WriteInt32(ataWords, Marshal.ReadInt32(ataWords) | (1 << ParkingIndex));
+			foreach (string key in prices.Keys.ToList())
+			{
+				prices[key] = v;
+			}
+			Log("locked parking at " + Num(v) + " (in the room)");
+			return;
+		}
+		lockedFlag = true;
 		lockHidden = Environment.GetEnvironmentVariable("FAKEGAME_LOCK_HIDDEN") == "1";
 		hiddenLock = v;
 		for (int i = 0; i < 0x40; i++)
@@ -192,13 +345,22 @@ internal static class FakeGame
 		}
 		if (!lockHidden)
 		{
-			byte[] name = Encoding.ASCII.GetBytes("parking");
-			for (int i = 0; i < name.Length; i++)
+			if (Environment.GetEnvironmentVariable("FAKEGAME_LOCK_TABLE") == "1")
 			{
-				Marshal.WriteByte(lockMem, 0x10 + i, name[i]);
+				// Other kinds' prices around it, no name.
+				Marshal.WriteInt32(lockMem, 0x2c, BitConverter.ToInt32(BitConverter.GetBytes(2.23f), 0));
+				Marshal.WriteInt32(lockMem, 0x34, BitConverter.ToInt32(BitConverter.GetBytes(9.5f), 0));
 			}
-			Marshal.WriteInt64(lockMem, 0x20, name.Length);
-			Marshal.WriteInt64(lockMem, 0x28, 15);
+			else
+			{
+				byte[] name = Encoding.ASCII.GetBytes("parking");
+				for (int i = 0; i < name.Length; i++)
+				{
+					Marshal.WriteByte(lockMem, 0x10 + i, name[i]);
+				}
+				Marshal.WriteInt64(lockMem, 0x20, name.Length);
+				Marshal.WriteInt64(lockMem, 0x28, 15);
+			}
 			Marshal.WriteInt32(lockMem, 0x30, BitConverter.ToInt32(BitConverter.GetBytes((float)v), 0));
 		}
 		foreach (string key in prices.Keys.ToList())
@@ -505,8 +667,29 @@ internal static class FakeGame
 		case "speed":
 			SetSpeed(float.Parse(arg, CultureInfo.InvariantCulture));
 			break;
+		case "carbrain":
+			ownCarbrain = float.Parse(arg, CultureInfo.InvariantCulture);
+			break;
+		case "buycar":
+		case "sellcar":
+		{
+			string[] words = arg.Split(' ');
+			if (parts[0] == "buycar")
+			{
+				carOwners[words[0]] = words[1];
+			}
+			else
+			{
+				carOwners.Remove(words[0]);
+			}
+			Emit("cars", "{\"owners\":{" + string.Join(",", carOwners.Select(kv => Json(kv.Key) + ":" + Json(kv.Value)).ToArray()) + "}}");
+			break;
+		}
 		case "lock":
 			Lock(double.Parse(arg, CultureInfo.InvariantCulture));
+			break;
+		case "unlock":
+			Unlock();
 			break;
 		case "sneak":
 			objects.Add(arg);
@@ -648,6 +831,14 @@ internal static class FakeGame
 			Emit("reconciled", "{\"bucket\":" + bucket + ",\"placed\":" + missing.Count + ",\"removed\":" + extra.Count + "}");
 			break;
 		}
+		case "cars":
+		{
+			// {["owners"]={["Ann"]="BananaCar",...},}
+			IEnumerable<string> pairs = Regex.Matches(rest, @"\[""([^""]*)""\]=""([^""]*)""").Cast<Match>()
+				.Where(m => m.Groups[1].Value != "type").Select(m => m.Groups[1].Value + "=" + m.Groups[2].Value).OrderBy(x => x, StringComparer.Ordinal);
+			Log("cars " + pairs.Count() + ": " + string.Join(",", pairs.ToArray()));
+			break;
+		}
 		case "menu":
 		{
 			// {["lines"]={"...","...",},["buttons"]={{["id"]="host",["label"]="Host",},},}
@@ -773,6 +964,16 @@ internal static class FakeGame
 			if (context == "level")
 			{
 				sim += 0.1 * speedSeen;
+				if (sim >= statsNextAt)
+				{
+					statsNextAt = sim + 4.0;
+					StatsSnapshot();
+				}
+			}
+			if (LatestCarbrain() != loggedCarbrain)
+			{
+				loggedCarbrain = LatestCarbrain();
+				Log("stats carbrain=" + SpeedText(loggedCarbrain));
 			}
 			if (context == "level" && tick % 10 == 0)
 			{
@@ -789,6 +990,7 @@ internal static class FakeGame
 				EmitDigest();
 			}
 			LockTick();
+			AtaTick();
 			if (markUndoAt >= 0 && tick >= markUndoAt)
 			{
 				markUndoAt = -1;

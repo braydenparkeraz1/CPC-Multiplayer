@@ -270,6 +270,15 @@ internal partial class Session
 		case "clock":
 			OnHostClock(m);
 			break;
+		case "stats":
+			OnHostStats(m);
+			break;
+		case "cars":
+			OnHostCars(m);
+			break;
+		case "applytoall":
+			OnHostApplyToAll(m);
+			break;
 		case "money":
 			OnHostMoney(m);
 			break;

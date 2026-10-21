@@ -9,7 +9,9 @@
 - **Lua tests** (`lua/sync_test.lua` with the stand-in engine `lua/engine.lua`, scenario `LuaSync`): the mod's
   `lua/hooks.lua` and `lua/sync.lua` running on Lua 5.4 (`LuaRunner.cs`, a minimal `lua.exe`) against a fake
   entity/component world: reporting builds, replaying friends' builds, retries, undo, digests and repairs, and two
-  "PCs" racing for one tile. Run them alone with `.testrun\bin\luarun\luarun.exe tests\lua\sync_test.lua`.
+  "PCs" racing for one tile. `lua/cars_test.lua` covers `lua/cars.lua`: the host reporting who owns which car, and a
+  friend's game giving the host's owners the same kind of car and taking back cars only it has, only from people out of
+  town, a few at a time. Run them alone with `.testrun\bin\luarun\luarun.exe tests\lua\sync_test.lua`.
   `lua/menu_test.lua` (scenario `LuaMenu`) does the same for `lua/menu.lua`, the main menu's buttons, with its own small
   stand-in for the engine: letters and shadows, clicks and hovering by cursor position, a menu sent before the camera exists,
   and a row of four buttons too wide for a 720p screen drawn smaller, on the same baseline, with its buttons still clickable.
@@ -174,12 +176,16 @@ price isn't in memory where the helper can find it. Inbox `typevalue?` is answer
 | Scenario (`run.ps1`) | Expected |
 |---|---|
 | MoneyHostIncomeFast | The host's money rises; the client shows it within 2 s (it was up to 3.5 s) |
+| StatsHostToClient | Host and client games compute other carbrainness (`carbrain 0.8` / `0.3`). The client helper finds the stats snapshots in its game's memory and writes the host's over its newest one, again for each new one its game adds; a new host value follows. The host never takes the client's. The stand-in keeps a Stats system at room+0x598 with a growing (and moving) vector of 0xe0-byte snapshots, like the game |
+| CarsHostToClient | The host's game reports its car owners (`buycar`, `sellcar`); the client's game gets the list (inbox `cars`) after each change. A purchase in the client's game doesn't reach the host. A client joining later gets the list once its city has loaded |
 | SpeedHostToClient | The host sets 3x, then pauses; the client's game follows, and the client is told who paused |
 | SpeedClientToHost | The client pauses, then sets 2x; the host's game follows, and the client's own changes aren't undone |
 | SpeedBothChange | Both change it at once; both end at the change that reached the host last |
 | SpeedClockCatchUp | The client's clock starts 30 s behind: it runs faster until it has caught up, then at the host's speed |
 | SpeedNoLayout | A game build the mod doesn't know: the helper says speed isn't shared, and builds still sync |
 | PriceLockedAtHost | "Apply to all" is ticked on the host: the client's price is undone there at first, the host's helper finds the stored price and changes it, and every entrance on both PCs ends at the client's price; the next change goes straight in |
+| PriceLockedTable | Like PriceLockedAtHost, but the stored price is a bare float among other prices (`FAKEGAME_LOCK_TABLE=1`), as in the game build checked; the host's helper finds it by its value |
+| ApplyToAllShared | The games keep the boxes and stored prices in the room like the real one (`FAKEGAME_ATA=1`). The host ticks parking with 0.3: the client's box is ticked with 0.3 and its entrances follow; the client's 0.5 reaches the host the same way; the host unticks and so does the client. No stored-price search runs |
 | PriceLockedHidden | The stored price can't be found: the host is told why friends can't change it, and the client goes back to the host's price |
 
 ClientBuildRejected now also checks that the client is told the game's reason.

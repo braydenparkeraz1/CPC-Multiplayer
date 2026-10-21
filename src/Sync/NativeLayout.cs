@@ -11,17 +11,44 @@ namespace CpcMultiplayer;
 // the game moves them, so they're only used when carparkcapital.exe's SHA-256 matches.
 //
 //   [exe + LevelPtr]        the open Level
+//   Level + Paused          byte: 1 while the player has paused (Space), 0 while it runs. The speed stays
+//                           as it was (found 2026-10-20 by diffing memory across three pauses)
 //   [Level + RoomsBegin]    the first element of its vector of rooms: the city (IsoRoom)
 //   [room]                  the IsoRoom vtable, exe + RoomVtable (checks we got a city)
 //   room + Speed            float: the simulation speed, 0 while paused
+//   [room + StatsSystem]    the Stats system, vtable exe + StatsVtable, with its vector of snapshots
+//                           (one every 4 game seconds) at StatsRecords: begin, end. The last one is what
+//                           the HUD shows (carbrainness, civil unrest, car dependency progress).
+//   room + ApplyToAllTicks  "apply to all" boxes, one bit per kind of price; room + ApplyToAllPrices: the
+//                           stored prices (see ApplyToAllSync)
 //
 // Tests (FakeGame) put the same structure in their own memory and name it with CPC_TEST_LAYOUT: a file,
-// relative to the game folder, holding "levelPtr <address>" and "roomVtable <address>" in hex.
+// relative to the game folder, holding "levelPtr <address>", "roomVtable <address>" and "statsVtable <address>"
+// in hex, and "applyToAll 1" when it keeps the "apply to all" vectors in the room like the game.
 internal class NativeLayout
 {
 	public const long RoomsBegin = 0x10;
 
+	public const long Paused = 0x8;
+
 	public const long Speed = 0x48c;
+
+	public const long StatsSystem = 0x598;
+
+	public const long StatsRecords = 0x48;
+
+	public const int StatsRecordSize = 0xe0;
+
+	// The part of a snapshot that is the city's state: the parking rate, counts (cars owned, parking spaces
+	// in high demand, ...) and the averages (civil unrest, happiness, carbrainness, ...). Before it are the
+	// time, the balance (shared on its own) and pointers into the game's own memory, which stay.
+	public const int StatsShared = 0x40;
+
+	public const int StatsSharedLength = 0x90;
+
+	public const long ApplyToAllTicks = 0x400;
+
+	public const long ApplyToAllPrices = 0x420;
 
 	private class Build
 	{
@@ -30,6 +57,10 @@ internal class NativeLayout
 		public long LevelPtr;
 
 		public long RoomVtable;
+
+		public long StatsVtable;
+
+		public bool HasApplyToAll;
 	}
 
 	private static readonly Build[] Builds =
@@ -38,7 +69,9 @@ internal class NativeLayout
 		{
 			Sha256 = "97DCE8EFF169634AD613401E7DABEA17EF6D9D02654823C342BBC43FFC684A87",
 			LevelPtr = 0x1bbaa10,
-			RoomVtable = 0x17bf968
+			RoomVtable = 0x17bf968,
+			StatsVtable = 0x17c0330,
+			HasApplyToAll = true
 		}
 	};
 
@@ -48,6 +81,19 @@ internal class NativeLayout
 	public long LevelPtr;
 
 	public long RoomVtable;
+
+	public long StatsVtable;
+
+	public bool HasApplyToAll;
+
+	// The open city's room, or 0 when there's none (or the chain looks wrong). readPtr reads 8 bytes, 0 on failure.
+	public long FindRoom(Func<long, long> readPtr)
+	{
+		long level = readPtr(LevelPtr);
+		long roomsBegin = level == 0 ? 0 : readPtr(level + RoomsBegin);
+		long room = roomsBegin == 0 ? 0 : readPtr(roomsBegin);
+		return room != 0 && readPtr(room) == RoomVtable ? room : 0;
+	}
 
 	// Null when this game build isn't one we know (Why says so).
 	public static NativeLayout For(string gameDir, int pid, out string why)
@@ -82,7 +128,7 @@ internal class NativeLayout
 			why = "can't see the game's memory layout (" + ex.Message + ")";
 			return null;
 		}
-		return new NativeLayout { LevelPtr = baseAddress + build.LevelPtr, RoomVtable = baseAddress + build.RoomVtable };
+		return new NativeLayout { LevelPtr = baseAddress + build.LevelPtr, RoomVtable = baseAddress + build.RoomVtable, StatsVtable = baseAddress + build.StatsVtable, HasApplyToAll = build.HasApplyToAll };
 	}
 
 	private static NativeLayout FromTestFile(string path, out string why)
@@ -106,6 +152,14 @@ internal class NativeLayout
 				else if (parts[0] == "roomVtable")
 				{
 					layout.RoomVtable = v;
+				}
+				else if (parts[0] == "statsVtable")
+				{
+					layout.StatsVtable = v;
+				}
+				else if (parts[0] == "applyToAll")
+				{
+					layout.HasApplyToAll = v != 0;
 				}
 			}
 			if (layout.LevelPtr != 0 && layout.RoomVtable != 0)

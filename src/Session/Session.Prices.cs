@@ -95,6 +95,12 @@ internal partial class Session
 			reverts[kind] = byKey;
 		}
 		byKey[key] = new Revert { Field = field, GameValue = value.Value, Wanted = wanted.Value };
+		if (applyToAll.Available)
+		{
+			// The boxes and stored prices themselves are shared (Session.ApplyToAll.cs); the price arrives that way.
+			reverts.Remove(kind);
+			return;
+		}
 		if (game.Id != 0 && priceMap.Attach(game.Id) && priceMap.Want(kind, field, value.Value, wanted.Value))
 		{
 			Ui.Log($"our game keeps {kind} prices at {value.Value} ('apply to all'); changing its stored price to {wanted.Value} ({priceMap.StatusOf(kind)})");
@@ -276,6 +282,8 @@ internal partial class Session
 			SendMoney(p);
 		}
 		SendSpeed(p, null);
+		SendApplyToAll(p, null);
+		SendCars(p);
 	}
 
 	// Client: the host's prices; the game applies only the ones that differ from its own.
