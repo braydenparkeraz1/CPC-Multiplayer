@@ -4,6 +4,9 @@
 need facts about the game that can't be found by reading its scripts. Each check below says what to do, what to
 send back, and what the answer decides.
 
+Results so far are in `docs/status.md`: P1 (pause and speed), P2 ("apply to all") and P3 (suburban home) pass; P4 and
+P11 led to the findings there (statistics, cars, protests).
+
 ## Setup
 
 Start the helper with the developer console:
