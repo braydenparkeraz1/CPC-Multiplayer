@@ -19,6 +19,8 @@
 //   money <value>         set the city's money (income or upkeep of our own simulation)
 //   click <id>            the player clicked a button on the main menu (lua/menu.lua), e.g. "click host"
 //   speed <value>         the player paused (0) or changed the game speed
+//   carbrain <value>      our own simulation's carbrainness, in the city statistics from the next snapshot on
+//                         (every 4 game seconds); the newest snapshot's is logged as "stats carbrain=<value>"
 //   lock <value>          the player ticked "apply to all" for parking prices at that value: from then on
 //                         every tick copies the stored price onto every entrance, like the game. The stored
 //                         price sits in native memory as the game's map node would hold it ("parking" as a
@@ -102,7 +104,26 @@ internal static class FakeGame
 
 	private static readonly IntPtr roomsMem = Marshal.AllocHGlobal(16);
 
-	private static readonly IntPtr roomMem = Marshal.AllocHGlobal(0x500);
+	private static readonly IntPtr roomMem = Marshal.AllocHGlobal(0x700);
+
+	// The Stats system at [room + 0x598]: its "vtable", and at +0x48 a vector of 0xe0-byte snapshots that
+	// grows by one every 4 game seconds (moving when it's full, like a std::vector).
+	private static readonly IntPtr statsSysMem = Marshal.AllocHGlobal(0x60);
+
+	private static readonly IntPtr statsVtableMem = Marshal.AllocHGlobal(16);
+
+	private static IntPtr statsRecords = IntPtr.Zero;
+
+	private static int statsCount;
+
+	private static int statsCapacity;
+
+	private static double statsNextAt;
+
+	// Our own simulation's carbrainness (control "carbrain <value>") and the newest snapshot's, last logged.
+	private static float ownCarbrain = 0.5f;
+
+	private static float loggedCarbrain = float.NaN;
 
 	private static readonly IntPtr vtableMem = Marshal.AllocHGlobal(16);
 
@@ -162,12 +183,53 @@ internal static class FakeGame
 		Marshal.WriteInt64(levelMem, 0x10, roomsMem.ToInt64());
 		Marshal.WriteInt64(roomsMem, roomMem.ToInt64());
 		Marshal.WriteInt64(roomMem, vtableMem.ToInt64());
+		Marshal.WriteInt64(roomMem, 0x598, statsSysMem.ToInt64());
+		Marshal.WriteInt64(statsSysMem, statsVtableMem.ToInt64());
+		StatsSnapshot();
 		SetSpeed(1f);
 		string layout = Environment.GetEnvironmentVariable("CPC_TEST_LAYOUT");
 		if (!string.IsNullOrEmpty(layout))
 		{
-			File.WriteAllText(layout, "levelPtr " + levelPtrCell.ToString("x") + "\nroomVtable " + vtableMem.ToString("x") + "\n");
+			File.WriteAllText(layout, "levelPtr " + levelPtrCell.ToString("x") + "\nroomVtable " + vtableMem.ToString("x") +
+				"\nstatsVtable " + statsVtableMem.ToString("x") + "\n");
 		}
+	}
+
+	// Adds a snapshot like the game's Stats system: time, then our own carbrainness at +0x98.
+	private static void StatsSnapshot()
+	{
+		if (statsCount == statsCapacity)
+		{
+			int capacity = Math.Max(4, statsCapacity * 2);
+			IntPtr moved = Marshal.AllocHGlobal(capacity * 0xe0);
+			for (int i = 0; i < statsCount * 0xe0; i++)
+			{
+				Marshal.WriteByte(moved, i, Marshal.ReadByte(statsRecords, i));
+			}
+			if (statsRecords != IntPtr.Zero)
+			{
+				Marshal.FreeHGlobal(statsRecords);
+			}
+			statsRecords = moved;
+			statsCapacity = capacity;
+		}
+		IntPtr record = statsRecords + statsCount * 0xe0;
+		for (int i = 0; i < 0xe0; i += 4)
+		{
+			Marshal.WriteInt32(record, i, 0);
+		}
+		Marshal.WriteInt32(record, 0, (int)sim);
+		Marshal.WriteInt32(record, 0x98, BitConverter.ToInt32(BitConverter.GetBytes(ownCarbrain), 0));
+		statsCount++;
+		Marshal.WriteInt64(statsSysMem, 0x48, statsRecords.ToInt64());
+		Marshal.WriteInt64(statsSysMem, 0x50, (record + 0xe0).ToInt64());
+		Marshal.WriteInt64(statsSysMem, 0x58, (statsRecords + statsCapacity * 0xe0).ToInt64());
+	}
+
+	private static float LatestCarbrain()
+	{
+		IntPtr record = statsRecords + (statsCount - 1) * 0xe0;
+		return BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(record, 0x98)), 0);
 	}
 
 	private static double LockValue()
@@ -505,6 +567,9 @@ internal static class FakeGame
 		case "speed":
 			SetSpeed(float.Parse(arg, CultureInfo.InvariantCulture));
 			break;
+		case "carbrain":
+			ownCarbrain = float.Parse(arg, CultureInfo.InvariantCulture);
+			break;
 		case "lock":
 			Lock(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
@@ -773,6 +838,16 @@ internal static class FakeGame
 			if (context == "level")
 			{
 				sim += 0.1 * speedSeen;
+				if (sim >= statsNextAt)
+				{
+					statsNextAt = sim + 4.0;
+					StatsSnapshot();
+				}
+			}
+			if (LatestCarbrain() != loggedCarbrain)
+			{
+				loggedCarbrain = LatestCarbrain();
+				Log("stats carbrain=" + SpeedText(loggedCarbrain));
 			}
 			if (context == "level" && tick % 10 == 0)
 			{

@@ -167,7 +167,7 @@ internal partial class Session
 				$"{tilesToApply.Count} tiles, {landToApply.Count} land; mod digest {(modDigest == null ? "none" : (DateTime.UtcNow - modDigest.At).TotalSeconds.ToString("0.0") + "s old, busy=" + modDigest.Busy)}");
 			PlayLog.Write("snap", $"tiles: {tiles.Status} (map {tiles.Size}, land={tiles.LandActive}, search attempts {locateAttempts}); " +
 				$"money: {money.Status} (located={money.Located}, value {FormatMoney(money.Located ? money.Read() : null)}, attempts {moneyAttempts}); " +
-				$"prices: {sharedSettings.Count} in the table");
+				$"prices: {sharedSettings.Count} in the table; " + StatsSnapshotText());
 			if (IsHost)
 			{
 				PlayLog.Write("snap", $"host: {proposals.Count} friends' builds being placed, {worldRequests.Count} waiting for a save, " +

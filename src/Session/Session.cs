@@ -27,6 +27,7 @@ namespace CpcMultiplayer;
 //   Session.Money.cs     one wallet (the host's): reading and writing it, friends' spends
 //   Session.Lan.cs       announcing our game on the network, and finding others' for the menu
 //   Session.Speed.cs     pause and game speed (in the game's memory), and keeping the clocks together
+//   Session.Stats.cs     the city statistics (carbrainness, civil unrest, car dependency): the host's
 //   Session.Commands.cs  console and control-file commands
 //   Session.Log.cs       the playtest log: snapshots of all of the above, players' notes
 internal partial class Session
@@ -254,6 +255,14 @@ internal partial class Session
 		{
 			Ui.Log("speed sync error: " + ex);
 		}
+		try
+		{
+			StatsTick();
+		}
+		catch (Exception ex)
+		{
+			Ui.Log("stats sync error: " + ex);
+		}
 		TileTick();
 		DriftTick();
 		UpdateMenu();
@@ -339,6 +348,7 @@ internal partial class Session
 		settingsSentAt.Clear();
 		ClearClientMoney();
 		ResetSpeed();
+		ResetStats();
 		ResetDrift();
 	}
 

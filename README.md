@@ -40,7 +40,8 @@ What is shared:
 | Parking and shop prices | The host's value wins; anyone can change them, also with "apply to all" ticked (0.4.0, 0.5.0) |
 | Money | One wallet, the host's. Everyone's builds are paid from it (0.4.0) |
 | Pause, game speed, day and time | Anyone pauses or changes the speed for everyone; clocks are kept together (0.5.0) |
-| Cars, people, protests, and the statistics that come from them (carbrainness, civil unrest, car dependency) | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
+| City statistics: carbrainness, civil unrest, need fulfilment, car dependency progress | The host's, on every HUD (0.5.0) |
+| Cars, people and protests themselves | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
 
 ## Build
 
@@ -209,6 +210,17 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
   - Builds carry the build tool's "paint the floor" setting (`paint`), and the copies use it.
   - When a build is taken back, the builder is told the game's reason ("the floor there is the wrong kind",
     "something else is already there") instead of always "overlapped something".
+- **City statistics are the host's.** Carbrainness, civil unrest, need fulfilment and the car dependency progress
+  (cars owned, parking spaces in high demand) come from each PC's own simulation of cars and people, which drift
+  apart: in a test the host showed 86% carbrainness and 79 car owners while the friend showed 58% and 38.
+  - Every 4 game seconds the game's Stats system adds a snapshot of them (224 bytes) to a list, and the HUD shows
+    the newest. `[city room + 0x598]` is the Stats system; its list is at `+0x48`.
+  - The host's helper sends its newest snapshot (`stats`) when it changes, and a friend's helper writes it over the
+    friend's own newest one, again for each new one (`src/Sync/StatsSync.cs`, `src/Session/Session.Stats.cs`). The
+    time, the balance and pointers in the snapshot stay the friend's own.
+  - Like pause and speed this needs the known game build; with another, the helper says so and the rest works.
+  - Only what the HUD shows follows the host. The car dependency level itself (`city room + 0x240`) still levels up
+    from each PC's own counts, and the simulation underneath (which cars are where) is still each PC's own.
 - **Developer memory console.** With `--dev`, `multiplayer/runtime/devmem.txt` takes memory commands (`chain`,
   `tiles`, `read`, `find`, `save`/`diff`, and `write` with `--dev-write`), with results in `devmemout.txt`. They
   run in the helper, so they work while the game is paused. See `src/Sync/DevMemory.cs` and `docs/probes-0.5.md`.
@@ -216,9 +228,13 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
 ### Not shared yet
 
 Each PC still runs its own simulation of cars, people and protests. A joiner starts with the host's (they're in the
-save), but they drift apart from then on. Carbrainness (the citizens' average), price tolerance, car dependency and
-civil unrest all come from that simulation, so they drift apart too.
-- On a friend's PC this changes what citizens will pay at a booth, but not the money: the wallet is the host's.
+save), but they drift apart from then on. The statistics on the HUD are the host's (above), but the simulation
+underneath isn't:
+- A friend's own cars leave parking lots and pay at other times than the host's, so the friend sees income that the
+  host's wallet (the one that counts) doesn't have, and the balance jumps back.
+- People buying cars, and so the car dependency level, happen on each PC by itself.
+- What citizens will pay at a booth follows each PC's own simulation, but not the money: the wallet is the host's.
+- Protests start on each PC from the shared civil unrest and buildings, often in the same place, but with other people.
 - Land bought by a friend shows as owned when hovered and can be built on, but stays dark on the map, and eviction
   there says it isn't owned. The map overlay and the eviction check use state the game only updates through its own
   purchase code.
@@ -326,6 +342,7 @@ Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 | `src/Session/Session.Prices.cs` | Prices: our game's edits, the host's table and its broadcasts |
 | `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
 | `src/Session/Session.Speed.cs` | Pause and game speed, and keeping the clocks together |
+| `src/Session/Session.Stats.cs`, `src/Sync/StatsSync.cs` | City statistics: the host's newest snapshot over each friend's own |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
 | `src/Session/Session.Menu.cs`, `src/Invite.cs`, `src/Clipboard.cs`, `src/ConsoleWindow.cs` | The main menu's buttons: what they show and do; the host's invite and the addresses in copied text; the clipboard; hiding the console window |
 | `src/Session/Session.Lan.cs`, `src/Net/Lan.cs` | Games on the same network: announcing ours while hosting, the games heard lately for the menu's buttons; the message format and the UDP sockets |
@@ -393,6 +410,7 @@ Anything else on the port is ignored.
 | `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). When it changes (at most every 0.2 s), at least every 5 s, and after `sync?` (0.4.0, 0.5.0) |
 | `speed` | both | Pause or game speed (`value`, 0 = paused). From a client with `seq`; from the host with `ack` (the newest `seq` from this client it applied) and `by` (who changed it, or null for a repeat). The host repeats it every 5 s and after `sync?` (0.5.0) |
 | `clock` | host → client | The host's game clock in simulation seconds (`sim`), every 2 s while it runs (0.5.0) |
+| `stats` | host → client | The host's newest city statistics snapshot: its game `time` and `data`, the 144 shared bytes in base64. When it changes (at most every 0.5 s), at least every 5 s (0.5.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
 `demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, `menu`, and `trace`, which only goes in the playtest log), and the

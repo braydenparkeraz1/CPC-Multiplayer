@@ -867,6 +867,22 @@ function Start-SpeedPair([hashtable]$clientExtra = @{}) {
     return $s
 }
 
+function Scenario-StatsHostToClient {
+    # Each game's own simulation gives other city statistics; the client's HUD shows the host's.
+    $s = Start-SpeedPair
+    Game $s.h "carbrain 0.8"
+    Game $s.c "carbrain 0.3"
+    Expect "host finds its statistics" { HelperLog $s.h } "stats: found the city statistics in the game's memory" 1 15
+    Expect "client shows the host's statistics" { HelperLog $s.c } "stats: showing the host's city statistics" 1 15
+    Expect "client's newest snapshot has the host's carbrainness" { GameLog $s.c } "stats carbrain=0\.8\r?\n" 1 15
+    # The client's game keeps adding its own (0.3) every 4 game seconds; each is overwritten again.
+    $before = [regex]::Matches((GameLog $s.c), "stats carbrain=0\.8\r?\n").Count
+    Expect "a later snapshot is overwritten too" { GameLog $s.c } "stats carbrain=0\.8\r?\n" ($before + 1) 15
+    Game $s.h "carbrain 0.6"
+    Expect "the host's new value follows" { GameLog $s.c } "stats carbrain=0\.6\r?\n" 1 15
+    if ((GameLog $s.h) -match "stats carbrain=0\.3") { throw "the host's statistics took the client's" }
+}
+
 function Scenario-SpeedHostToClient {
     $s = Start-SpeedPair
     Game $s.h "speed 3"
@@ -924,7 +940,7 @@ $scenarios = @("HelperUnits", "LuaSync",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
     "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
-    "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
+    "StatsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
     "PriceLockedAtHost", "PriceLockedHidden")
 if ($Only) {
     # "-File" passes "A,B" as one string.

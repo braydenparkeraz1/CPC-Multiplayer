@@ -211,6 +211,7 @@ internal partial class Session
 		gameSettingSeq = 0;
 		ResetMoney();
 		ResetSpeed();
+		ResetStats();
 		ResetPriceMap();
 		if (IsHost && wasInCity)
 		{
