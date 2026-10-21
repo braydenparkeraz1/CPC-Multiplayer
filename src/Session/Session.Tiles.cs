@@ -20,6 +20,23 @@ internal partial class Session
 
 	private readonly TileSync tiles = new TileSync();
 
+	private readonly ConstructionFloors constructionFloors = new ConstructionFloors();
+
+	private Templates templates;
+
+	private Templates TemplateTable
+	{
+		get
+		{
+			if (templates == null)
+			{
+				templates = Templates.Load(gameDir);
+				constructionFloors.Watch(templates.AllFloors);
+			}
+			return templates;
+		}
+	}
+
 	private readonly List<TileChange> tilesToApply = new List<TileChange>();
 
 	private readonly List<KeyValuePair<int, byte>> landToApply = new List<KeyValuePair<int, byte>>();
@@ -85,6 +102,24 @@ internal partial class Session
 	{
 		tiles.AbandonAnchors();
 		tiles.Detach();
+		constructionFloors.Clear();
+	}
+
+	// A build (ours, or one we pass to our game) may paint the floor under it while it's built; those
+	// floor changes aren't sent (see ConstructionFloors).
+	private void NoteConstruction(Dictionary<string, object> ev)
+	{
+		if (ev == null || Util.Str(ev, "type") != "place" || !(Util.Int(ev, "x") is long x) || !(Util.Int(ev, "y") is long y) || !(Util.Int(ev, "z") is long z))
+		{
+			return;
+		}
+		constructionFloors.Add(TemplateTable.FloorFor(Util.Str(ev, "tpl")), (int)x, (int)y, (int)z, DateTime.UtcNow);
+	}
+
+	private int[] TilePosition(int index)
+	{
+		tiles.Position(index, out int x, out int y, out int z);
+		return new[] { x, y, z };
 	}
 
 	private void TileTick()
@@ -121,12 +156,19 @@ internal partial class Session
 			}
 			return;
 		}
-		List<TileChange> changes = tiles.Poll();
+		List<TileChange> polled = tiles.Poll();
 		if (!tiles.Active)
 		{
 			Ui.Warn("Lost track of the tile map (" + tiles.Status + "), searching again.");
 			locateAttempts = 0;
 			return;
+		}
+		_ = TemplateTable;
+		int droppedBefore = constructionFloors.Dropped;
+		List<TileChange> changes = constructionFloors.Filter(polled, TilePosition, DateTime.UtcNow);
+		if (constructionFloors.Dropped > droppedBefore)
+		{
+			Ui.Log($"construction floor changes not shared: {constructionFloors.Dropped - droppedBefore}");
 		}
 		if (changes.Count > 0)
 		{

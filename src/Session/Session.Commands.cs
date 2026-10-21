@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 
 namespace CpcMultiplayer;
@@ -111,6 +112,76 @@ internal partial class Session
 			Ui.Log("dev: eval " + code.Length + " chars");
 			Post(() => inbox.Add("eval", Msg.Fields("code", code)));
 		}
+	}
+
+	// --dev: memory commands (DevMemory), one per line in devmem.txt; results in devmemout.txt. They run
+	// on this thread: a search over the game's memory takes a while.
+	private void ReadDevMemCommands()
+	{
+		string path = DevPath("devmem.txt");
+		DevMemory mem = new DevMemory { AllowWrite = opts.DevWrite };
+		while (!work.IsAddingCompleted)
+		{
+			Thread.Sleep(500);
+			string[] lines;
+			try
+			{
+				if (!File.Exists(path))
+				{
+					continue;
+				}
+				lines = File.ReadAllLines(path);
+				File.Delete(path);
+			}
+			catch (IOException)
+			{
+				continue;
+			}
+			catch (UnauthorizedAccessException)
+			{
+				continue;
+			}
+			StringBuilder output = new StringBuilder();
+			int pid = game.Id;
+			string why = "not started";
+			if (pid == 0 || !mem.Attach(pid, out why))
+			{
+				output.Append($"[{DateTime.Now:HH:mm:ss}] the game isn't running or can't be opened ({why})\r\n");
+			}
+			else
+			{
+				foreach (string line in lines.Where(l => l.Trim().Length > 0 && !l.TrimStart().StartsWith("#")))
+				{
+					string result = mem.Run(line, what => what == "tiles" ? tiles.Describe : DescribeChain(mem, pid));
+					output.Append($"[{DateTime.Now:HH:mm:ss}] > {line.Trim()}\r\n{result}\r\n\r\n");
+				}
+			}
+			try
+			{
+				File.AppendAllText(DevPath("devmemout.txt"), output.ToString(), new UTF8Encoding(false));
+			}
+			catch (IOException ex)
+			{
+				Ui.Log("devmemout.txt write failed: " + ex.Message);
+			}
+		}
+	}
+
+	private string DescribeChain(DevMemory mem, int pid)
+	{
+		NativeLayout layout = NativeLayout.For(gameDir, pid, out string why);
+		if (layout == null)
+		{
+			return "no known layout: " + why;
+		}
+		long level = mem.ReadPtr(layout.LevelPtr);
+		long rooms = level == 0 ? 0 : mem.ReadPtr(level + NativeLayout.RoomsBegin);
+		long roomsEnd = level == 0 ? 0 : mem.ReadPtr(level + NativeLayout.RoomsBegin + 8);
+		long room = rooms == 0 ? 0 : mem.ReadPtr(rooms);
+		long vtable = room == 0 ? 0 : mem.ReadPtr(room);
+		byte[] speedBytes = room == 0 ? null : mem.Read(room + NativeLayout.Speed, 4);
+		string speedText = speedBytes == null ? "?" : BitConverter.ToSingle(speedBytes, 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
+		return $"level {level:x}, rooms {rooms:x}..{roomsEnd:x} ({(roomsEnd - rooms) / 8} rooms), city room {room:x}, vtable {vtable:x} ({(vtable == layout.RoomVtable ? "a city" : "NOT a city")}), speed {speedText}";
 	}
 
 	private void WriteDevOutput(Dictionary<string, object> result)

@@ -193,6 +193,106 @@ internal static class HelperTests
 			Eq(Msg.List(d, "missing").Count, 0, "missing");
 		});
 
+		Run("a client follows the host's money at once, except for its own purchase", () =>
+		{
+			Eq(MoneyFollow.Decide(100.0, 100.0, 100.0, false), MoneyFollow.Action.None, "same");
+			Eq(MoneyFollow.Decide(1000.0, 100.0, null, false), MoneyFollow.Action.Write, "first write");
+			Eq(MoneyFollow.Decide(1100.0, 1000.0, 1000.0, false), MoneyFollow.Action.Write, "host income shows at once");
+			Eq(MoneyFollow.Decide(900.0, 1000.0, 1000.0, false), MoneyFollow.Action.Write, "host spending shows at once");
+			Eq(MoneyFollow.Decide(1000.0, 1080.0, 1000.0, false), MoneyFollow.Action.Write, "our own income is undone at once");
+			Eq(MoneyFollow.Decide(1000.0, 998.0, 1000.0, false), MoneyFollow.Action.Write, "our own upkeep is undone at once");
+			Eq(MoneyFollow.Decide(1000.0, 950.0, 1000.0, false), MoneyFollow.Action.Hold, "our purchase is held");
+			Eq(MoneyFollow.Decide(1100.0, 950.0, 1000.0, false), MoneyFollow.Action.Hold, "held while the host earns");
+			Eq(MoneyFollow.Decide(1000.0, 950.0, 1000.0, true), MoneyFollow.Action.Write, "an unexplained drop is undone in the end");
+			Eq(MoneyFollow.Decide(950.0, 949.0, 1000.0, false), MoneyFollow.Action.Write, "once its spend is sent, the target matches");
+			Eq(MoneyFollow.Decide(500.0, 950.0, 1000.0, false), MoneyFollow.Action.Write, "the host spent more than we did");
+		});
+
+		Run("a client behind the host's clock runs faster until it has caught up", () =>
+		{
+			bool nudging = false;
+			Eq(ClockNudge.Factor(1.0, ref nudging), 1.0, "a second apart is fine");
+			Check(!nudging, "not nudging");
+			Check(ClockNudge.Factor(3.0, ref nudging) > 1.2 && nudging, "3 s behind: faster");
+			Check(ClockNudge.Factor(1.0, ref nudging) > 1.2 && nudging, "keeps going until close");
+			Eq(ClockNudge.Factor(0.2, ref nudging), 1.0, "close: back to the host's speed");
+			Check(!nudging, "stopped");
+			Eq(ClockNudge.Factor(600.0, ref nudging), ClockNudge.MaxFactor, "far behind: capped");
+			nudging = false;
+			Eq(ClockNudge.Factor(-5.0, ref nudging), ClockNudge.SlowFactor, "ahead: slower");
+		});
+
+		Run("a house's construction floor isn't sent, other floor changes are", () =>
+		{
+			List<string> materials = new List<string> { "Grass", "Asphalt", "Sidewalk", "Concrete", "Steel", "Dirt" };
+			Templates t = new Templates();
+			t.Add("SuburbanHome0", "dimensions = uvec3(6, 4, 4),\n construction = UnderConstruction {\n bSetFloorDuringConstruction = true,\n"
+				+ " floorDuringConstruction = getMaterialIndexByName(\"Dirt\"),\n bSetFloorAfterConstruction = true,\n"
+				+ " floorAfterConstruction = getMaterialIndexByName(\"Grass\")\n }", materials);
+			t.Add("Bench", "dimensions = uvec3(1, 1, 1),", materials);
+			Templates.ConstructionFloor house = t.FloorFor("SuburbanHome0");
+			Check(house != null && house.During == 5 && house.After == 0 && house.SizeX == 6, "house parsed");
+			Check(t.FloorFor("Bench") == null, "a bench doesn't paint");
+
+			// Tile index i is at x = i, y = 0, z = 0.
+			Func<int, int[]> pos = i => new[] { i, 0, 0 };
+			TileChange Paint(int i, int from, int to) => new TileChange { Index = i, Shape = 1, OldShape = 1, OldMat = (byte)(from << 2), Mat = (byte)(to << 2) };
+			ConstructionFloors f = new ConstructionFloors();
+			DateTime now = new DateTime(2026, 10, 20, 12, 0, 0);
+			Eq(f.Filter(new List<TileChange> { Paint(10, 0, 5) }, pos, now).Count, 1, "no house built yet: Dirt goes out as usual");
+
+			f.Add(house, 10, 1, 0, now);
+			List<TileChange> sent = f.Filter(new List<TileChange> { Paint(10, 0, 5), Paint(11, 0, 1) }, pos, now);
+			Eq(sent.Count, 1, "asphalt goes out at once");
+			Eq(sent[0].Index, 11, "the asphalt");
+			Eq(f.Dropped, 1, "the house's dirt isn't sent");
+			Eq(f.Filter(new List<TileChange> { Paint(10, 5, 0) }, pos, now.AddSeconds(100)).Count, 0, "back to grass when finished: not sent");
+			Eq(f.Filter(new List<TileChange> { Paint(40, 0, 5) }, pos, now.AddSeconds(101)).Count, 0, "dirt away from the house waits a moment");
+			Eq(f.Filter(new List<TileChange>(), pos, now.AddSeconds(103)).Count, 1, "then goes out");
+
+			// The game paints the floor before the mod reports the build.
+			ConstructionFloors g = new ConstructionFloors();
+			g.Add(house, 500, 1, 0, now);
+			Eq(g.Filter(new List<TileChange> { Paint(80, 0, 5) }, pos, now).Count, 0, "held");
+			g.Add(house, 80, 1, 0, now.AddSeconds(0.3));
+			Eq(g.Filter(new List<TileChange>(), pos, now.AddSeconds(0.5)).Count, 0, "explained by the build that came after");
+			Eq(g.Waiting, 0, "nothing left waiting");
+
+			// Before any build was reported: the templates say which materials to hold.
+			ConstructionFloors first = new ConstructionFloors();
+			first.Watch(t.AllFloors);
+			Eq(first.Filter(new List<TileChange> { Paint(30, 0, 5) }, pos, now).Count, 0, "the first house's dirt is held too");
+			first.Add(house, 30, 1, 0, now.AddSeconds(0.2));
+			Eq(first.Filter(new List<TileChange>(), pos, now.AddSeconds(0.4)).Count, 0, "and dropped once the house shows up");
+			Eq(first.Filter(new List<TileChange> { Paint(31, 0, 5) }, pos, now.AddSeconds(60)).Count, 0, "a minute later, dirt is held ...");
+			Eq(first.Filter(new List<TileChange>(), pos, now.AddSeconds(62)).Count, 1, "... and goes out: the player painted it");
+
+			// A newer change to a held tile replaces it.
+			ConstructionFloors h2 = new ConstructionFloors();
+			h2.Watch(t.AllFloors);
+			Eq(h2.Filter(new List<TileChange> { Paint(50, 1, 5) }, pos, now).Count, 0, "dirt held");
+			List<TileChange> newer = h2.Filter(new List<TileChange> { Paint(50, 5, 1) }, pos, now.AddSeconds(0.5));
+			Eq(newer.Count, 1, "asphalt over it goes out");
+			Eq(h2.Filter(new List<TileChange>(), pos, now.AddSeconds(3)).Count, 0, "the older dirt never does");
+		});
+
+		Run("a block reason is put in words", () =>
+		{
+			Eq(BlockReason.Describe("PLACE_BLOCK_WRONG_FLOOR_MATERIAL"), "the floor there is the wrong kind", "known");
+			Eq(BlockReason.Describe("SOMETHING_NEW"), "SOMETHING_NEW", "unknown stays");
+			Eq(BlockReason.Describe(null), null, "none");
+			Eq(BlockReason.Clean("a\nb<script>"), "abscript", "cleaned");
+		});
+
+		Run("a build's floor-painting setting is kept", () =>
+		{
+			Dictionary<string, object> d = Place("House@3,1,2/0/0", "House", 3);
+			d["paint"] = true;
+			Eq(BuildEvent.Sanitize("place", d)["paint"], (object)true, "kept");
+			d["paint"] = "yes";
+			Check(!BuildEvent.Sanitize("place", d).ContainsKey("paint"), "not a bool: dropped");
+		});
+
 		Console.WriteLine(failures == 0 ? "All helper unit tests passed" : failures + " helper unit tests failed");
 		return failures == 0 ? 0 : 1;
 	}

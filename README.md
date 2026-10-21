@@ -26,9 +26,10 @@ What is shared:
 |---|---|
 | Objects (buildings, entrances, decorations) | Placed and demolished on every PC |
 | Roads, floors, land ownership | Copied through the game's memory |
-| Parking prices | The host's value wins; anyone can change them (0.4.0) |
+| Parking and shop prices | The host's value wins; anyone can change them, also with "apply to all" ticked (0.4.0, 0.5.0) |
 | Money | One wallet, the host's. Everyone's builds are paid from it (0.4.0) |
-| Cars, traffic, how full garages are | **Not shared**: each PC simulates its own |
+| Pause, game speed, day and time | Anyone pauses or changes the speed for everyone; clocks are kept together (0.5.0) |
+| Cars, people, protests, and the statistics that come from them (carbrainness, civil unrest, car dependency) | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
 
 ## Build
 
@@ -51,6 +52,12 @@ Run every test with `tests\run.ps1` (see `tests/README.md`).
 `--dev` makes the helper check `multiplayer/runtime/devcmd.txt` in the game folder once a second. The whole file is run
 as one Lua chunk in the game (in the level's environment, like the `lua` command) and then deleted. Each result is
 appended to `multiplayer/runtime/devout.txt`. It is off by default. `docs/api-findings.md` lists what was learned with it.
+
+It also checks `multiplayer/runtime/devmem.txt` for commands that look at the game's memory from outside (one per
+line; results in `devmemout.txt`), which work while the game is paused: `chain` (the city and its speed), `tiles`
+(where the tile map and land are), `read <addr> <len>`, `find str|f32|f64|ptr <value>`, `save <name> <addr> <len>`
+then `diff <name>`, and `write <addr> f32|f64|i32|i64|u8 <value>` only with `--dev-write`. Addresses are hex.
+`docs/probes-0.5.md` lists the checks planned with it.
 
 ## Playtest log
 
@@ -99,6 +106,61 @@ in the lobby ends the helper. `host` and `join` on the command line work as befo
 The helper remembers your name and the last 5 host addresses that connected in `multiplayer/settings.json` in the game
 folder. On first run the name defaults to your Steam profile name (from Steam's `config/loginusers.vdf`), then your
 Windows user name.
+
+## Changes in 0.5.0
+
+Fixes from the first playtest. The protocol changed, so every player needs 0.5.0.
+
+- **Pause and game speed are shared.** Whoever pauses, unpauses or changes the speed, every game follows, and the
+  others see who did it ("Ethan paused the game"). When two players change it at once, the change that reaches the
+  host last wins everywhere.
+  - Lua can't see or set the speed, and the mod's Lua doesn't run while paused. So the helper reads and writes it
+    in the game's memory (`src/Sync/SpeedSync.cs`), every 50 ms, paused or not.
+  - Where it lives was found by disassembling the game, so it only works with the game build it was found in
+    (checked by the exe's SHA-256, `src/Sync/NativeLayout.cs`). With another build the helper says "Pause and game
+    speed aren't shared" and everything else works as before.
+  - If the game undoes the helper's writes, speed sharing goes read-only and says so.
+  - **Day and time of day stay together.** The mod's heartbeat carries the game's clock (`getSimulationTime()`).
+    A friend whose clock is more than 2 s behind the host's (a joiner starts from the host's last save) runs a bit
+    faster than the host (up to 2x) until it has caught up, or a bit slower when ahead. The clock itself can't be set.
+  - Pauses the game makes by itself (if the Esc menu pauses) are shared too.
+- **Money follows the host within a moment.** The host sends its balance whenever it changes (at most 5 times a
+  second; it was every 2 s), and a friend writes it straight away (every 50 ms; was 0.25 s). The 1.5 s hold for a
+  friend's own purchase no longer delays the host's income (`src/Sync/MoneyFollow.cs`). A friend's own simulated income
+  and upkeep no longer flash on screen.
+- **"Apply to all" prices sync.** With "apply to all" ticked for a kind of price, the game keeps one stored price
+  for the kind (`money.syncedPrices`) and copies it onto every object all the time, so a friend's price written
+  into the objects was undone at once, and the host's mod reported that undo as its player's edit.
+  - The mod now tells the game's undo apart from its player's edits (`settingrevert`).
+  - The helper then finds the stored price in the game's memory (`src/Sync/PriceMapSync.cs`: the kind's name
+    followed by the price, checked by writing the friend's price and seeing every object take it) and changes it.
+  - If it can't be found, the host's price stands and the player whose game holds it is told to untick
+    "apply to all".
+  - Ticking or unticking the box itself is still each player's own.
+- **A friend's suburban home no longer fails in the host's city.** The house turns its plot to Dirt while it's
+  built, and those floor changes reached the host before the house did. The house needs Grass, so the host's game
+  refused it, and the Dirt left behind made every retry fail too.
+  - Floors a building paints under itself while it's built are no longer sent or charged
+    (`src/Sync/ConstructionFloors.cs`, with sizes and materials from the game's templates in `src/Game/Templates.cs`).
+    Every PC's own copy of the build paints them.
+  - Builds carry the build tool's "paint the floor" setting (`paint`), and the copies use it.
+  - When a build is taken back, the builder is told the game's reason ("the floor there is the wrong kind",
+    "something else is already there") instead of always "overlapped something".
+- **Developer memory console.** With `--dev`, `multiplayer/runtime/devmem.txt` takes memory commands (`chain`,
+  `tiles`, `read`, `find`, `save`/`diff`, and `write` with `--dev-write`), with results in `devmemout.txt`. They
+  run in the helper, so they work while the game is paused. See `src/Sync/DevMemory.cs` and `docs/probes-0.5.md`.
+
+### Not shared yet
+
+Each PC still runs its own simulation of cars, people and protests. A joiner starts with the host's (they're in the
+save), but they drift apart from then on. Carbrainness (the citizens' average), price tolerance, car dependency and
+civil unrest all come from that simulation, so they drift apart too.
+- On a friend's PC this changes what citizens will pay at a booth, but not the money: the wallet is the host's.
+- Land bought by a friend shows as owned when hovered and can be built on, but stays dark on the map, and eviction
+  there says it isn't owned. The map overlay and the eviction check use state the game only updates through its own
+  purchase code.
+
+Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 
 ## Changes in 0.4.0
 
@@ -188,7 +250,7 @@ Windows user name.
 
 | File | Role |
 |---|---|
-| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`, `--no-share-log`), console menu; `Ui` writes status lines to a sink (the console today) |
+| `src/Program.cs`, `Options.cs`, `Ui.cs` | Entry point, CLI args (`host`, `join <ip[:port]>`, `lobby`, `install`, `uninstall`, `--port`, `--name`, `--game`, `--autosave`, `--city`, `--allow-second-instance`, `--control <file>`, `--dev`, `--dev-write`, `--no-share-log`), console menu; `Ui` writes status lines to a sink (the console today) |
 | `src/Settings.cs`, `SteamName.cs`, `Util.cs` | `multiplayer/settings.json` (name, recent hosts); the Steam profile name as the default name; JSON and small helpers |
 | `src/Session/Session.cs` | The helper while the game runs: main loop, starting and relaunching the game, the lobby, shutting down. Its header explains how the parts fit |
 | `src/Session/Session.Game.cs` | The mod in our game: its `MP>` lines, and messages we send it |
@@ -198,14 +260,19 @@ Windows user name.
 | `src/Session/Session.Drift.cs` | Digests, comparing with the host, repairing differences |
 | `src/Session/Session.Prices.cs` | Prices: our game's edits, the host's table and its broadcasts |
 | `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
+| `src/Session/Session.Speed.cs` | Pause and game speed, and keeping the clocks together |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
 | `src/Session/Session.Log.cs`, `src/PlayLog.cs` | The playtest log: its file and line format, snapshots, players' notes |
-| `src/Protocol/Msg.cs`, `BuildEvent.cs` | Building and reading messages; checking build events (`place`/`demolish`/`remove`) |
+| `src/Protocol/Msg.cs`, `BuildEvent.cs`, `BlockReason.cs` | Building and reading messages; checking build events (`place`/`demolish`/`remove`); why the game refused a build, in words |
 | `src/Sync/ChangeLog.cs` | Host: every change since the city opened, for joiners |
 | `src/Sync/PendingEdits.cs` | Client: tile and land changes the host hasn't confirmed |
 | `src/Sync/DriftTracker.cs` | Client: which buckets or areas to repair |
 | `src/Sync/SharedSettings.cs` | The host's price table (whitelist, ranges, what changed) and the queue of prices for our game |
-| `src/Sync/MoneySync.cs` | Finds, reads and writes the city's money in the game's memory |
+| `src/Sync/MoneySync.cs`, `MoneyFollow.cs` | Finds, reads and writes the city's money in the game's memory; when a friend writes the host's balance |
+| `src/Sync/NativeLayout.cs`, `SpeedSync.cs`, `ClockNudge.cs` | The game's speed behind a known pointer chain (per game build); how much faster a friend runs to catch up |
+| `src/Sync/PriceMapSync.cs` | Finds and changes the game's stored "apply to all" price of a kind |
+| `src/Sync/ConstructionFloors.cs`, `src/Game/Templates.cs` | Floor changes a building makes while it's built, which aren't sent; template sizes, construction floors and price kinds from the game's scripts |
+| `src/Sync/DevMemory.cs` | `--dev` memory console |
 | `src/Sync/TileSync.cs`, `Native.cs`, `TileChange.cs`, `PaintAnchor.cs` | Roads/floors/land in the game's memory (`ReadProcessMemory`/`WriteProcessMemory`), and their area hashes |
 | `src/Net/Peer.cs` | One TCP connection: newline-delimited JSON, queued sends, liveness |
 | `src/Game/GameInstall.cs` | Finds the game (Steam library or parent folders), copies the Lua files in, and patches 3 game scripts between `-- [cpc-multiplayer] begin/end` markers |
@@ -217,7 +284,7 @@ Windows user name.
 | `lua/util.lua` | JSON encoder; `MP.emit` prints `MP>{json}` to stdout |
 | `lua/hooks.lua` | Wraps `setComponents`/`setComponent` to see every new placeable entity |
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; keeps the digest of shared objects and repairs buckets; runs the repaint queue; reports the map size |
-| `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices |
+| `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices, tells the game's "apply to all" undoing a price from the player's edits |
 | `lua/money.lua` | Marker transactions for finding the money; applies friends' spends on the host |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
 | `lua/MPPaint0..13.lua` | Invisible one-tile placeables, one per floor material, used to make the game redraw tiles the helper wrote |
@@ -234,7 +301,7 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `refused` | host → client | Not let in (`reason`), e.g. a different mod version (0.4.0) |
 | `world?` / `world` | client → host / host → client | Ask for / send the city (base64 save, plus newer builds, tiles and land) |
 | `ev` | both | Object placed, demolished or removed (`ev.type`, `ev.key`). From a client it's a proposal |
-| `ok` / `undo` | host → client | The host's game placed a client's build / couldn't, so everyone takes it back (`key`) (0.4.0) |
+| `ok` / `undo` | host → client | The host's game placed a client's build / couldn't, so everyone takes it back (`key`, and `reason` in words when the game gave one) (0.4.0, 0.5.0) |
 | `tiles`, `land` | both | Changed roads/floors (6 bytes each) and land ownership (5 bytes each), base64. From a client with `seq` |
 | `tilesok`, `landok` | host → client | The host applied the client's changes up to `seq` (0.4.0) |
 | `digest` | host → client | Every 5 s: `objects` (64 × "count:hash"), `tiles` and `land` (64 area hashes), `busy` (0.4.0) |
@@ -250,7 +317,9 @@ TCP, port 27777 by default, one JSON object per line, field `t` is the type.
 | `settings` | host → client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`). `ack` is the newest `seq` from this client the host had applied; the client skips objects it changed after that (0.4.0) |
 | `sync?` | client → host | Sent after loading the host's city: asks for every current price and the money (0.4.0) |
 | `spend` | client → host | The client's build or demolition: `id` (counts up), `amount` (negative for a refund), `reason`, `key`. Applied once per `id` (0.4.0) |
-| `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). Every 2 s when it changes, at least every 10 s, and after `sync?` (0.4.0) |
+| `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). When it changes (at most every 0.2 s), at least every 5 s, and after `sync?` (0.4.0, 0.5.0) |
+| `speed` | both | Pause or game speed (`value`, 0 = paused). From a client with `seq`; from the host with `ack` (the newest `seq` from this client it applied) and `by` (who changed it, or null for a repeat). The host repeats it every 5 s and after `sync?` (0.5.0) |
+| `clock` | host → client | The host's game clock in simulation seconds (`sim`), every 2 s while it runs (0.5.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
 `demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, and `trace`, which only goes in the playtest log), and the
@@ -261,4 +330,8 @@ change, with its own `seq`), inbox `settings` (apply these; `seen` is the newest
 values for a field it changed later), inbox `settings?` (reply with all values) and its `settings` reply. For money:
 inbox `moneymark` (`mark`, `amount`: add it, take it back ~0.5 s later, reporting each step as `moneymark`) and inbox
 `spend` (host only: `spent` and `refunded` from friends).
+In 0.5.0: `hb` carries `sim` (the game's clock); `place` may carry `paint` (the build tool's floor painting), in both
+directions; `blocked` carries `reason` (the game's `Placing.blockedReasonStr`); the mod reports `settingrevert` (`key`,
+`field`, `value` the game put back, `wanted`, `kind` of price) and answers inbox `typevalue?` (`req`, `kind`, `field`) with
+`typevalue` (`count`, `min`, `max`); inbox `pricingids` (`names`) tells it the price kinds in the game's scripts.
 

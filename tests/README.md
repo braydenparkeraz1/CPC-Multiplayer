@@ -145,3 +145,36 @@ KeyMan cost the wallet 400, its demolition gave 200 back, and host and friend bu
 15 road tiles cost 180, the same as the friend's own game charged. The host's income reached the friend every 2 s. Land
 plots cost 7,177.50 and 4,300 (not per cell); a friend's land purchase was free in that build, which led to charging
 what the friend's game spent (not retried in game yet).
+
+## Scenarios added for 0.5.0
+
+The fake game keeps a speed behind the same pointer chain as the game's (Level, rooms[0], room+0x48c). With
+`CPC_TEST_LAYOUT=<file>` set it writes the addresses to that file in its folder, and the helper reads them from
+there instead of using the game build's offsets. `speed <value>` in its `control.txt` acts as the player pausing (0)
+or changing the speed. It logs `speed now <v>` whenever the helper changes it, and `dump` adds `speed=<v> sim=<s>`.
+Its clock (`sim` in heartbeats) runs at that speed, from the wall clock; `FAKEGAME_SIM_BEHIND=<s>` starts a city that
+far behind.
+
+`lock <value>` ticks "apply to all" for parking: every tick the stored price (a map node in native memory, "parking"
+then a float) is copied onto every entrance. A price the helper had it apply a moment before is reported as
+`settingrevert`; any other change as `setting`, as `lua/settings.lua` does. With `FAKEGAME_LOCK_HIDDEN=1` the stored
+price isn't in memory where the helper can find it. Inbox `typevalue?` is answered with every entrance's price.
+
+| Scenario (`run.ps1`) | Expected |
+|---|---|
+| MoneyHostIncomeFast | The host's money rises; the client shows it within 2 s (it was up to 3.5 s) |
+| SpeedHostToClient | The host sets 3x, then pauses; the client's game follows, and the client is told who paused |
+| SpeedClientToHost | The client pauses, then sets 2x; the host's game follows, and the client's own changes aren't undone |
+| SpeedBothChange | Both change it at once; both end at the change that reached the host last |
+| SpeedClockCatchUp | The client's clock starts 30 s behind: it runs faster until it has caught up, then at the host's speed |
+| SpeedNoLayout | A game build the mod doesn't know: the helper says speed isn't shared, and builds still sync |
+| PriceLockedAtHost | "Apply to all" is ticked on the host: the client's price is undone there at first, the host's helper finds the stored price and changes it, and every entrance on both PCs ends at the client's price; the next change goes straight in |
+| PriceLockedHidden | The stored price can't be found: the host is told why friends can't change it, and the client goes back to the host's price |
+
+ClientBuildRejected now also checks that the client is told the game's reason.
+`lua/settings_test.lua` (run in LuaSync) checks the mod's side of prices: a player's edit is reported, a friend's
+price isn't echoed, a price the game puts back under "apply to all" is a `settingrevert` and not an edit, and the
+kinds of price are named and listed. `lua/sync_test.lua` adds the block reason and the build tool's floor painting.
+
+`-Bin <folder>` runs the scenarios from another build folder (`build.ps1 -Out <folder>`), e.g. while a helper still
+runs from `.testrun\bin`.

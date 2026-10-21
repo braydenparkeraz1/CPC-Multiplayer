@@ -40,6 +40,9 @@ internal class Peer
 
 	public long SpendApplied;
 
+	// Host: the newest "speed" seq from this client we've applied; our "speed" carries it as "ack".
+	public long SpeedSeq;
+
 	// Host: what we last sent this client as our money, and when.
 	public double MoneySent = double.NaN;
 

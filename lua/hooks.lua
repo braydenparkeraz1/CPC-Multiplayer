@@ -15,9 +15,11 @@ if rooms[roomEnv] then return end
 -- playerPlaced: placed objects created while the build tool had a preview ghost of the same kind.
 -- This is decided here, when the object is created, because the mod's timers stop while the game
 -- is paused and players often build while paused.
+-- playerPaint: for those, whether the build tool was set to paint the floor under them (bAutoPaintFloor),
+-- so other players' games place them the same way.
 local state = {
     candidates = {}, seen = 0, installedBy = installedBy or "catalogue",
-    seq = 0, ghostSeq = {}, ghostEntity = {}, playerPlaced = {},
+    seq = 0, ghostSeq = {}, ghostEntity = {}, playerPlaced = {}, playerPaint = {},
 }
 rooms[roomEnv] = state
 
@@ -40,8 +42,13 @@ local function watch(entity)
     local templateIndex = placeableGetFor(entity).templateIndex
     if placedHas(entity) then
         local ghost, ghostSeq = state.ghostEntity[templateIndex], state.ghostSeq[templateIndex]
-        if (ghost and valid(ghost) and placingHas(ghost)) or (ghostSeq and state.seq - ghostSeq <= GHOST_SEQ_WINDOW) then
+        local ghostAlive = ghost and valid(ghost) and placingHas(ghost)
+        if ghostAlive or (ghostSeq and state.seq - ghostSeq <= GHOST_SEQ_WINDOW) then
             state.playerPlaced[entity] = true
+            if ghostAlive then
+                local ok, paint = pcall(function() return placingGetFor(ghost).bAutoPaintFloor end)
+                if ok and type(paint) == "boolean" then state.playerPaint[entity] = paint end
+            end
         end
     elseif placingHas(entity) and not persistentHas(entity) and not placingGetFor(entity).bTryFinish then
         -- The build tool's preview; scripted placements (spills, synced objects) set bTryFinish.

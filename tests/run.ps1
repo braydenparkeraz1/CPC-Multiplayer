@@ -1,13 +1,15 @@
 # Runs the helper against the stand-in game (tests/FakeGame.cs) through the scenarios in tests/README.md.
 # Build first with build.ps1. Every helper and fake game here runs under .testrun\t and is closed afterwards.
 #
-#   powershell -ExecutionPolicy Bypass -File tests\run.ps1 [-Only <scenario>,...]
+#   powershell -ExecutionPolicy Bypass -File tests\run.ps1 [-Only <scenario>,...] [-Bin <build folder>]
 param(
-    [string[]]$Only
+    [string[]]$Only,
+    # Another build folder (build.ps1 -Out), e.g. while something still runs from the usual one.
+    [string]$Bin
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
-$bin = Join-Path $root ".testrun\bin"
+$bin = if ($Bin) { $Bin } else { Join-Path $root ".testrun\bin" }
 $work = Join-Path $root ".testrun\t"
 $helperExe = Join-Path $bin "CPC-Multiplayer.exe"
 $fakeExe = Join-Path $bin "fake\carparkcapital.exe"
@@ -325,18 +327,20 @@ function Scenario-HelperUnits {
 function Scenario-LuaSync {
     & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\sync_test.lua") | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed" }
+    & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\settings_test.lua") | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "Lua settings tests failed" }
 }
 
 # ---- 0.4.0 sync: the host decides, instant join, drift repair ----
 
-function Start-HostAndClient([hashtable]$hostEnv = @{}) {
+function Start-HostAndClient([hashtable]$hostEnv = @{}, [hashtable]$clientEnv = @{}) {
     $h = New-GameDir "host"; $c = New-GameDir "client"; $port = Next-Port
     Start-Helper $h @("host", "--name", "Hosty", "--port", $port) $hostEnv | Out-Null
     Expect "host listens" { HelperLog $h } "Hosting on port $port"
     Game $h "level"
     Expect "host city loaded" { HelperLog $h } "City loaded"
     Expect "host asks its game for prices" { GameLog $h } "settings\? answered"
-    Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty") | Out-Null
+    Start-Helper $c @("join", "127.0.0.1:$port", "--name", "Clienty") $clientEnv | Out-Null
     Expect "client in host's city" { HelperLog $c } "You're in the host's city"
     return @{ h = $h; c = $c; port = $port }
 }
@@ -414,7 +418,7 @@ function Scenario-ClientBuildRejected {
     $s = Start-HostAndClient @{ FAKEGAME_BLOCK = "Bench@4,1,4/0/0" }
     Game $s.c "build Bench@4,1,4/0/0"
     Expect "host takes it back" { HelperLog $s.h } "Clienty's Bench didn't fit in your city"
-    Expect "client is told" { HelperLog $s.c } "Your Bench overlapped something in the host's city"
+    Expect "client is told why" { HelperLog $s.c } "Your Bench couldn't be placed in the host's city \(something else is already there\)"
     Expect "client's game takes it out" { GameLog $s.c } "undo Bench@4,1,4/0/0"
 }
 
@@ -613,6 +617,51 @@ function Scenario-PriceStaleAtClient {
     Write-Host "    ok: the client game kept its own later edit"
 }
 
+# The newest "price <key>=" line of a game's dump.
+function Expect-Latest([string]$what, [string]$dir, [string]$key, [string]$value, [int]$timeout = 15) {
+    $deadline = (Get-Date).AddSeconds($timeout)
+    $last = "(none)"
+    while ((Get-Date) -lt $deadline) {
+        Game $dir "dump"
+        Start-Sleep -Milliseconds 500
+        $m = [regex]::Matches((GameLog $dir), "price " + [regex]::Escape($key) + "=([-0-9.E+]+)")
+        if ($m.Count -gt 0) { $last = $m[$m.Count - 1].Groups[1].Value }
+        if ($last -eq $value) { Write-Host "    ok: $what"; return }
+    }
+    throw "timed out waiting for: $what ($key=$value, last $last)"
+}
+
+function Start-LockedHost([hashtable]$hostEnv = @{}) {
+    $s = Start-HostAndClient $hostEnv
+    Game $s.h "price $K1 0.06"
+    Game $s.h "price $K2 0.06"
+    Expect-Latest "client has the host's prices" $s.c $K2 "0.06"
+    Game $s.h "lock 0.06"
+    return $s
+}
+
+function Scenario-PriceLockedAtHost {
+    # "Apply to all" is ticked for parking on the host: its game undoes a client's price on the objects,
+    # so the host's helper changes the game's stored price instead, and every entrance follows.
+    $s = Start-LockedHost
+    Game $s.c "price $K1 0.4"
+    Expect "host game undoes it at first" { GameLog $s.h } "lock undid"
+    Expect "host finds the stored price" { HelperLog $s.h } "found the game's stored price for parking" 1 30
+    Expect-Latest "host's other entrance follows" $s.h $K2 "0.4"
+    Expect-Latest "client keeps its price" $s.c $K1 "0.4"
+    Expect-Latest "client's other entrance follows" $s.c $K2 "0.4"
+    Game $s.c "price $K1 0.5"
+    Expect-Latest "the next change goes straight in" $s.h $K2 "0.5"
+}
+
+function Scenario-PriceLockedHidden {
+    # The stored price can't be found: the host's price stands, and the host is told why.
+    $s = Start-LockedHost @{ FAKEGAME_LOCK_HIDDEN = "1" }
+    Game $s.c "price $K1 0.4"
+    Expect "host is told why friends can't change it" { HelperLog $s.h } "'Apply to all' is ticked for parking prices in your game" 1 30
+    Expect-Latest "client goes back to the host's price" $s.c $K1 "0.06"
+}
+
 $F1 = "TestFlag@10,8,20/0/0"
 $F2 = "TestFlag@12,8,20/0/0"
 
@@ -655,6 +704,13 @@ function Scenario-MoneyHostToClient {
     Expect-Money "client game follows the host's money" $s.c "12345.5"
 }
 
+function Scenario-MoneyHostIncomeFast {
+    # The host's money rises (income): the client shows it within a moment, not seconds later.
+    $s = Start-MoneyPair
+    Game $s.h "money 70000.5"
+    Expect-Money "client game follows the host's income quickly" $s.c "70000.5" 2
+}
+
 function Scenario-MoneyClientIncomeIgnored {
     # The client's own simulation earned something: the host's balance wins.
     $s = Start-MoneyPair
@@ -692,6 +748,10 @@ function Scenario-MoneyUnpricedBuild {
     Game $s.c "place Mystery@10,8,20/0/0 75"
     Expect "host game is charged what the client's game spent" { GameLog $s.h } "spend spent=75 refunded=0"
     Expect-BothMoney $s "59925.25"
+    # A second one right after: charged its own cost only, not the first one again.
+    Game $s.c "place Mystery@12,8,20/0/0 40"
+    Expect "host game is charged the second one alone" { GameLog $s.h } "spend spent=40 refunded=0"
+    Expect-BothMoney $s "59885.25"
 }
 
 function Scenario-MoneyHostPaused {
@@ -708,14 +768,78 @@ function Scenario-MoneyHostPaused {
     Expect-BothMoney $s "59950.25"
 }
 
+# ---- 0.5.0 pause and game speed ----
+
+# The fake games put their speed behind the game's pointer chain and name it in this file.
+$SpeedEnv = @{ CPC_TEST_LAYOUT = "speedlayout.txt" }
+
+function Start-SpeedPair([hashtable]$clientExtra = @{}) {
+    $clientEnv = $SpeedEnv.Clone()
+    foreach ($k in $clientExtra.Keys) { $clientEnv[$k] = $clientExtra[$k] }
+    $s = Start-HostAndClient $SpeedEnv $clientEnv
+    Expect "host finds its game's speed" { HelperLog $s.h } "speed: found in the game's memory" 1 15
+    Expect "client finds its game's speed" { HelperLog $s.c } "speed: found in the game's memory" 1 15
+    return $s
+}
+
+function Scenario-SpeedHostToClient {
+    $s = Start-SpeedPair
+    Game $s.h "speed 3"
+    Expect "client game runs at the host's speed" { GameLog $s.c } "speed now 3\r?\n" 1 5
+    Game $s.h "speed 0"
+    Expect "client game pauses with the host's" { GameLog $s.c } "speed now 0\r?\n" 1 5
+    Expect "client is told who paused" { HelperLog $s.c } "Hosty paused the game"
+}
+
+function Scenario-SpeedClientToHost {
+    $s = Start-SpeedPair
+    Game $s.c "speed 0"
+    Expect "host game pauses with the client's" { GameLog $s.h } "speed now 0\r?\n" 1 5
+    Expect "host is told who paused" { HelperLog $s.h } "Clienty paused the game"
+    Game $s.c "speed 2"
+    Expect "host game runs at the client's speed" { GameLog $s.h } "speed now 2\r?\n" 1 5
+    Start-Sleep -Seconds 2
+    if ((GameLog $s.c) -match "speed now") { throw "the client's game had its own change undone" }
+    Write-Host "    ok: the client's own change wasn't undone"
+}
+
+function Scenario-SpeedBothChange {
+    # Both change it at almost the same moment: the one that reaches the host last wins everywhere.
+    $s = Start-SpeedPair
+    Game $s.h "speed 2"
+    Game $s.c "speed 3"
+    Expect "host game ends at the later change" { GameLog $s.h } "speed now 3\r?\n" 1 5
+    Start-Sleep -Seconds 1
+    Game $s.h "dump"; Game $s.c "dump"
+    Expect "host game has 3" { GameLog $s.h } "speed=3 " 1 5
+    Expect "client game has 3" { GameLog $s.c } "speed=3 " 1 5
+}
+
+function Scenario-SpeedClockCatchUp {
+    # The client's city starts 30 s behind the host's clock (an older save): it runs faster until it has caught up.
+    $s = Start-SpeedPair @{ FAKEGAME_SIM_BEHIND = "30" }
+    Expect "client runs faster to catch up" { GameLog $s.c } "speed now (1\.[2-9]|2)" 1 10
+    Expect "client back at the host's speed once caught up" { GameLog $s.c } "speed now 1\r?\n" 1 60
+}
+
+function Scenario-SpeedNoLayout {
+    # A game build the mod doesn't know (the fake's exe hash): speed isn't shared, everything else is.
+    $s = Start-HostAndClient
+    Expect "host says speed isn't shared" { HelperLog $s.h } "Pause and game speed aren't shared: this game version" 1 10
+    Game $s.c "build Bench@4,1,4/0/0"
+    Expect "builds still sync" { GameLog $s.h } "place Bench@4,1,4/0/0 \(proposal\)"
+}
+
 $scenarios = @("HelperUnits", "LuaSync",
     "HostJoin", "HostQuit", "HostKilled", "IgnoreLeave",
     "NoModeIsLobby", "LobbyHostJoin", "LobbyBadJoin", "LobbyHostLeaves", "LobbyClientLeaves", "LobbyHostQuits", "LobbyHostGoneBeforeCity",
     "ClientBuildAccepted", "PlaytestLog", "NoShareLog", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused",
     "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
-    "MoneyFound", "MoneyHostToClient", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
-    "MoneyUnpricedBuild", "MoneyHostPaused")
+    "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
+    "MoneyUnpricedBuild", "MoneyHostPaused",
+    "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
+    "PriceLockedAtHost", "PriceLockedHidden")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }

@@ -8,11 +8,13 @@
 --     tile is taken (objects here are one tile big)
 --   * the build tool: a preview ghost (Placing without Persistent) next to the placed object
 --   * a demolition (Demolished) removing the object a few ticks later
+--   * prices (ParkingEntry, Pricing) and "apply to all": with syncedPrices[kind] set, every update
+--     copies it onto every object of that kind, as the game does with money.syncedPrices
 -- Not modelled: paint jobs finish instantly as "ok" if the tile is free.
 local Engine = {}
 Engine.__index = Engine
 
-local COMPONENTS = { "Placeable", "Placed", "Placing", "Persistent", "Demolished" }
+local COMPONENTS = { "Placeable", "Placed", "Placing", "Persistent", "Demolished", "ParkingEntry", "Pricing" }
 
 function Engine.new(root)
     local w = setmetatable({}, Engine)
@@ -27,6 +29,7 @@ function Engine.new(root)
     w.placingJobs = {}   -- entity -> { tpl, at }
     w.demolishing = {}   -- entity -> tick
     w.emitted = {}
+    w.syncedPrices = {}  -- kind -> price, for kinds with "apply to all" ticked
     w.finishAfter = 2
     w.demolishAfter = 3
     w.room = w:makeRoom()
@@ -106,6 +109,7 @@ function Engine:makeRoom()
     room.onEvent = function() end
     room.setOnDestroyCallback = function() end
     room.tileMapSize = { x = 64, y = 8, z = 64 }
+    room.getPricingId = function(name) return w:templateOf("pricing:" .. name) end
     return setmetatable(room, { __index = _G })
 end
 
@@ -140,11 +144,13 @@ function Engine:spawnPlaced(tpl, x, y, z, rot, var)
 end
 
 -- Our player builds something with the build tool: its ghost is there when the object is made.
-function Engine:playerBuild(tpl, x, y, z, rot, var)
+-- paint: the tool's "paint the floor" setting (bAutoPaintFloor), if given.
+function Engine:playerBuild(tpl, x, y, z, rot, var, paint)
     local ghost = self:create()
     self.room.setComponents(ghost, {
         self.room.Placeable { templateIndex = self:templateOf(tpl) },
-        self.room.Placing { at = { tilePosition = { x = x, y = y, z = z }, rotation = rot or 0, variantId = var or 0 }, bTryFinish = false },
+        self.room.Placing { at = { tilePosition = { x = x, y = y, z = z }, rotation = rot or 0, variantId = var or 0 }, bTryFinish = false,
+            bAutoPaintFloor = paint },
     })
     local e = self:spawnPlaced(tpl, x, y, z, rot, var)
     self:destroy(ghost)
@@ -162,6 +168,9 @@ end
 
 function Engine:update()
     self.tick = self.tick + 1
+    for e, entry in pairs(self.comps.ParkingEntry) do
+        if self.syncedPrices.parking then entry.ratePerMinute = self.syncedPrices.parking end
+    end
     for e, job in pairs(self.placingJobs) do
         if not self.alive[e] then
             self.placingJobs[e] = nil
@@ -174,6 +183,7 @@ function Engine:update()
             elseif self:objectAt(pos.x, pos.y, pos.z) then
                 placing.bEvaluated = true
                 placing.bBlocked = true
+                placing.blockedReasonStr = "PLACE_BLOCK_OCCUPIED_BY_INCOMPATIBLE_PLACEABLE"
                 if placing.bDestroyOnBlockedFinish then self:destroy(e) end
             else
                 self:destroy(e)
@@ -186,8 +196,9 @@ function Engine:update()
     end
 end
 
--- Loads the mod the way the game does in a level: the hook while templates load, then sync.
-function Engine:bootMod()
+-- Loads the mod the way the game does in a level: the hook while templates load, then sync
+-- (and settings, with withSettings).
+function Engine:bootMod(withSettings)
     local function load(name, ...)
         local chunk = assert(loadfile(self.root .. "/lua/" .. name .. ".lua", "t", self.room))
         return chunk(...)
@@ -198,6 +209,7 @@ function Engine:bootMod()
     load("util", MP)
     MP.emit = function(t, d) self.emitted[#self.emitted + 1] = { t = t, d = d } end
     load("sync", MP)
+    if withSettings then load("settings", MP) end
     self.MP = MP
     return MP
 end

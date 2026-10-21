@@ -17,8 +17,18 @@
 //   pause / resume        stop / start reading the inbox, like the real game while paused
 //   dump                  log every price as "price <key>=<value>", and "money=<value>"
 //   money <value>         set the city's money (income or upkeep of our own simulation)
+//   speed <value>         the player paused (0) or changed the game speed
+//   lock <value>          the player ticked "apply to all" for parking prices at that value: from then on
+//                         every tick copies the stored price onto every entrance, like the game. The stored
+//                         price sits in native memory as the game's map node would hold it ("parking" as a
+//                         short std::string, then a float), unless FAKEGAME_LOCK_HIDDEN=1.
 // The money lives in native memory like the game's, so the helper has to find it by scanning this
 // process (inbox "moneymark") and reads or writes it there. Inbox "spend" charges it.
+// The speed sits in native memory behind the game's pointer chain (Level -> rooms[0] -> room+0x48c, see
+// src/Sync/NativeLayout.cs); with CPC_TEST_LAYOUT=<file> set, the addresses are written to that file in the
+// game folder for the helper. A city's clock ("sim" in heartbeats) runs at that speed, starting from the
+// wall clock so every fake game agrees; FAKEGAME_SIM_BEHIND=<s> starts a joined city that far behind.
+// fakegame.log gets "speed now <v>" whenever something else (the helper) changes the speed.
 // Environment: FAKEGAME_IGNORE_LEAVE=1 ignores "leave" (tests the helper's force-close);
 // FAKEGAME_BLOCK=<key> makes a friend's build of that key not fit (reported "blocked").
 // fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "place Bench@1,1,1/0/0",
@@ -36,7 +46,7 @@ using System.Threading;
 
 internal static class FakeGame
 {
-	private const string Version = "0.4.0";
+	private const string Version = "0.5.0";
 
 	private const int Buckets = 64;
 
@@ -83,6 +93,35 @@ internal static class FakeGame
 
 	private const double StartMoney = 60000.25;
 
+	// Level -> rooms[0] -> room, as in the game; [room] holds the "vtable" the helper checks.
+	private static readonly IntPtr levelPtrCell = Marshal.AllocHGlobal(16);
+
+	private static readonly IntPtr levelMem = Marshal.AllocHGlobal(64);
+
+	private static readonly IntPtr roomsMem = Marshal.AllocHGlobal(16);
+
+	private static readonly IntPtr roomMem = Marshal.AllocHGlobal(0x500);
+
+	private static readonly IntPtr vtableMem = Marshal.AllocHGlobal(16);
+
+	private const int SpeedOffset = 0x48c;
+
+	private static float speedSeen = 1f;
+
+	private static double sim;
+
+	// "Apply to all" for parking: the stored price, as a map node (string "parking", float at +0x30).
+	private static readonly IntPtr lockMem = Marshal.AllocHGlobal(0x40);
+
+	private static bool locked;
+
+	private static bool lockHidden;
+
+	private static double hiddenLock;
+
+	// key -> (value, tick) of prices the helper had us apply, to tell the lock undoing them.
+	private static readonly Dictionary<string, KeyValuePair<double, int>> appliedAt = new Dictionary<string, KeyValuePair<double, int>>();
+
 	private static long markId;
 
 	private static double markAmount;
@@ -97,6 +136,107 @@ internal static class FakeGame
 	private static void Set(IntPtr p, double v)
 	{
 		Marshal.WriteInt64(p, BitConverter.DoubleToInt64Bits(v));
+	}
+
+	private static float GetSpeed()
+	{
+		return BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(roomMem, SpeedOffset)), 0);
+	}
+
+	private static void SetSpeed(float v)
+	{
+		Marshal.WriteInt32(roomMem, SpeedOffset, BitConverter.ToInt32(BitConverter.GetBytes(v), 0));
+		speedSeen = v;
+	}
+
+	private static string SpeedText(double v)
+	{
+		return v.ToString("0.###", CultureInfo.InvariantCulture);
+	}
+
+	private static void SetUpSpeed()
+	{
+		Marshal.WriteInt64(levelPtrCell, 0L);
+		Marshal.WriteInt64(levelMem, 0x10, roomsMem.ToInt64());
+		Marshal.WriteInt64(roomsMem, roomMem.ToInt64());
+		Marshal.WriteInt64(roomMem, vtableMem.ToInt64());
+		SetSpeed(1f);
+		string layout = Environment.GetEnvironmentVariable("CPC_TEST_LAYOUT");
+		if (!string.IsNullOrEmpty(layout))
+		{
+			File.WriteAllText(layout, "levelPtr " + levelPtrCell.ToString("x") + "\nroomVtable " + vtableMem.ToString("x") + "\n");
+		}
+	}
+
+	private static double LockValue()
+	{
+		if (lockHidden)
+		{
+			return hiddenLock;
+		}
+		// A float, read back as the decimal it was written from (as the mod's JSON would show it).
+		float f = BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(lockMem, 0x30)), 0);
+		return double.Parse(f.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+	}
+
+	private static void Lock(double v)
+	{
+		locked = true;
+		lockHidden = Environment.GetEnvironmentVariable("FAKEGAME_LOCK_HIDDEN") == "1";
+		hiddenLock = v;
+		for (int i = 0; i < 0x40; i++)
+		{
+			Marshal.WriteByte(lockMem, i, 0);
+		}
+		if (!lockHidden)
+		{
+			byte[] name = Encoding.ASCII.GetBytes("parking");
+			for (int i = 0; i < name.Length; i++)
+			{
+				Marshal.WriteByte(lockMem, 0x10 + i, name[i]);
+			}
+			Marshal.WriteInt64(lockMem, 0x20, name.Length);
+			Marshal.WriteInt64(lockMem, 0x28, 15);
+			Marshal.WriteInt32(lockMem, 0x30, BitConverter.ToInt32(BitConverter.GetBytes((float)v), 0));
+		}
+		foreach (string key in prices.Keys.ToList())
+		{
+			prices[key] = v;
+		}
+		Log("locked parking at " + Num(v) + (lockHidden ? " (hidden)" : " at " + lockMem.ToString("x")));
+	}
+
+	// The game copying its stored price onto every entrance, as lua/settings.lua sees it: a price we
+	// applied a moment ago being put back is reported as "settingrevert", any other change as the
+	// player's own ("setting").
+	private static void LockTick()
+	{
+		if (!locked)
+		{
+			return;
+		}
+		double g = LockValue();
+		foreach (string key in prices.Keys.ToList())
+		{
+			if (Math.Abs(prices[key] - g) <= 1e-6)
+			{
+				continue;
+			}
+			prices[key] = g;
+			if (appliedAt.TryGetValue(key, out KeyValuePair<double, int> applied) && tick - applied.Value <= 5)
+			{
+				if (Math.Abs(applied.Key - g) > 1e-6)
+				{
+					Log("lock undid " + key + "=" + Num(applied.Key));
+					Emit("settingrevert", "{\"key\":" + Json(key) + ",\"field\":\"" + PriceField + "\",\"value\":" + Num(g) + ",\"wanted\":" + Num(applied.Key) + ",\"kind\":\"parking\"}");
+				}
+			}
+			else
+			{
+				protect[key] = ++settingSeq;
+				Emit("setting", Setting(key, g, settingSeq));
+			}
+		}
 	}
 
 	private static void Transact(double amount)
@@ -260,6 +400,17 @@ internal static class FakeGame
 		tick = 0;
 		ready = false;
 		objects.Clear();
+		// Only a city has the room the speed lives in.
+		Marshal.WriteInt64(levelPtrCell, ctx == "level" ? levelMem.ToInt64() : 0L);
+		if (ctx == "level")
+		{
+			sim = (DateTime.UtcNow - new DateTime(2026, 1, 1)).TotalSeconds;
+			double behind;
+			if (double.TryParse(Environment.GetEnvironmentVariable("FAKEGAME_SIM_BEHIND"), NumberStyles.Float, CultureInfo.InvariantCulture, out behind))
+			{
+				sim -= behind;
+			}
+		}
 		Emit("room", "{\"context\":\"" + ctx + "\",\"version\":\"" + Version + "\",\"session\":\"" + session + "\"}");
 		Log("room " + ctx);
 		readyIn = ctx == "level" ? 5 : -1;
@@ -337,9 +488,20 @@ internal static class FakeGame
 				Log("price " + kv.Key + "=" + Num(kv.Value));
 			}
 			Log("money=" + Num(Get(balanceMem)));
+			Log("speed=" + SpeedText(GetSpeed()) + " sim=" + SpeedText(sim));
+			if (locked)
+			{
+				Log("locked=" + Num(LockValue()));
+			}
 			break;
 		case "money":
 			SetMoney(double.Parse(arg, CultureInfo.InvariantCulture));
+			break;
+		case "speed":
+			SetSpeed(float.Parse(arg, CultureInfo.InvariantCulture));
+			break;
+		case "lock":
+			Lock(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
 		case "sneak":
 			objects.Add(arg);
@@ -398,6 +560,17 @@ internal static class FakeGame
 		case "settings":
 			ApplySettings(rest);
 			break;
+		case "pricingids":
+			Log("pricingids");
+			break;
+		case "typevalue?":
+		{
+			List<double> values = prices.Values.ToList();
+			string range = values.Count > 0 ? ",\"min\":" + Num(values.Min()) + ",\"max\":" + Num(values.Max()) : "";
+			Log("typevalue? " + Field(rest, "kind"));
+			Emit("typevalue", "{\"req\":" + Field(rest, "req") + ",\"kind\":\"" + Field(rest, "kind") + "\",\"count\":" + values.Count + range + "}");
+			break;
+		}
 		case "moneymark":
 			if (markUndoAt >= 0)
 			{
@@ -429,7 +602,7 @@ internal static class FakeGame
 			Log("place " + key + (rest.Contains("[\"proposal\"]=true") ? " (proposal)" : ""));
 			if (key == blockKey)
 			{
-				Emit("blocked", "{\"key\":" + Json(key) + "}");
+				Emit("blocked", "{\"key\":" + Json(key) + ",\"reason\":\"PLACE_BLOCK_OCCUPIED_BY_INCOMPATIBLE_PLACEABLE\"}");
 			}
 			else
 			{
@@ -493,6 +666,7 @@ internal static class FakeGame
 			else if (!prices.TryGetValue(key, out double old) || Math.Abs(old - v) > 1e-9)
 			{
 				prices[key] = v;
+				appliedAt[key] = new KeyValuePair<double, int>(v, tick);
 				Log("applied " + key + " " + PriceField + "=" + Num(v));
 			}
 		}
@@ -543,6 +717,7 @@ internal static class FakeGame
 		string blockKey = Environment.GetEnvironmentVariable("FAKEGAME_BLOCK");
 		string inboxPath = Path.Combine("multiplayer", "runtime", "inbox_" + session + ".lua");
 		SetMoney(StartMoney);
+		SetUpSpeed();
 		Log("started; money at " + balanceMem.ToString("x") + ", copy at " + displayMem.ToString("x") + ", statistic at " + statMem.ToString("x"));
 		EnterRoom("menu");
 		while (true)
@@ -576,9 +751,18 @@ internal static class FakeGame
 				Emit("ready", "{\"objects\":3,\"seen\":3,\"hookedBy\":\"catalogue\",\"map\":{\"x\":512,\"y\":96,\"z\":512}}");
 				Log("ready");
 			}
+			if (GetSpeed() != speedSeen)
+			{
+				speedSeen = GetSpeed();
+				Log("speed now " + SpeedText(speedSeen));
+			}
+			if (context == "level")
+			{
+				sim += 0.1 * speedSeen;
+			}
 			if (context == "level" && tick % 10 == 0)
 			{
-				Emit("hb", "{\"tick\":" + tick + ",\"paused\":" + (paused ? "true" : "false") + "}");
+				Emit("hb", "{\"tick\":" + tick + ",\"paused\":" + (paused ? "true" : "false") + ",\"sim\":" + Num(sim) + "}");
 			}
 			// The HUD redraws even while paused.
 			Set(displayMem, Get(balanceMem));
@@ -590,6 +774,7 @@ internal static class FakeGame
 			{
 				EmitDigest();
 			}
+			LockTick();
 			if (markUndoAt >= 0 && tick >= markUndoAt)
 			{
 				markUndoAt = -1;

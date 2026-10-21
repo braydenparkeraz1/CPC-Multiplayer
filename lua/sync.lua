@@ -32,6 +32,7 @@ S.byKey = S.byKey or {}            -- key -> entity
 S.scanList = S.scanList or {}
 S.scanPos = S.scanPos or 1
 S.ghosts = S.ghosts or {}          -- templateIndex -> tick a player ghost was last seen
+S.playerPaint = S.playerPaint or {}  -- entity -> the build tool's auto-paint setting when our player placed it
 S.expectPlace = S.expectPlace or {}           -- key -> simTick the replayed placement gives up
 S.expectRemoval = S.expectRemoval or {}       -- key -> simTick the replayed demolition gives up
 S.removeAfterPlace = S.removeAfterPlace or {}
@@ -157,10 +158,13 @@ local function processCandidates()
         if not valid(e) then
             S.candidates[e] = nil
             S.playerPlaced[e] = nil
+            S.playerPaint[e] = nil
         elseif component.Placed.has(e) then
             S.candidates[e] = nil
             local byPlayer = S.playerPlaced[e]
+            local paint = S.playerPaint[e]
             S.playerPlaced[e] = nil
+            S.playerPaint[e] = nil
             if not S.known[e] then
                 local key, info = describePlaced(e)
                 if key then
@@ -183,6 +187,7 @@ local function processCandidates()
                         S.localAt[key] = S.tick
                         S.lastLocalBuild = S.tick
                         info.key = key
+                        info.paint = paint
                         MP.emit("place", info)
                     end
                     -- Anything else the game made by itself. A shared object it re-created stays
@@ -251,6 +256,15 @@ local function worthRetrying(p)
     return not p.msg.proposal and S.tick - S.lastLocalBuild < OWN_BUILD_WAIT
 end
 
+-- Why the game refused a placement: its own reason (e.g. "PLACE_BLOCK_WRONG_FLOOR_MATERIAL"), if it says.
+local function blockedReason(placing)
+    local ok, reason = pcall(function() return placing.blockedReasonStr end)
+    if ok and type(reason) == "string" and reason ~= "" then return reason end
+    ok, reason = pcall(function() return placing.blockedReason end)
+    if ok and reason ~= nil then return tostring(reason) end
+    return nil
+end
+
 local function flushPending()
     flushRemovals(REMOVE_DELAY)
     if #S.delayed > 0 then
@@ -275,6 +289,15 @@ local function flushPending()
             MP.trace("place hung", { key = key, tries = p.tries })
             destroyEntity(p.entity)
             p.hung = true
+        elseif valid(p.entity) and S.tick - p.tick >= 2 then
+            -- Blocked: the game keeps the Placing entity (bDestroyOnBlockedFinish = false) so we can
+            -- read why, then it goes like a vanished one.
+            local placing = component.Placing.has(p.entity) and component.Placing.getFor(p.entity)
+            if placing and placing.bEvaluated and placing.bBlocked then
+                p.reason = blockedReason(placing)
+                MP.trace("place blocked", { key = key, tries = p.tries, reason = p.reason })
+                destroyEntity(p.entity)
+            end
         end
         if S.placing[key] and not valid(p.entity) then
             S.placing[key] = nil
@@ -290,7 +313,7 @@ local function flushPending()
                 S.delayed[#S.delayed + 1] = { tick = S.tick + RETRY_TICKS, msg = retry }
             else
                 S.expectPlace[key] = nil
-                MP.emit("blocked", { key = key })
+                MP.emit("blocked", { key = key, reason = p.reason })
             end
         end
     end
@@ -396,11 +419,21 @@ local function busy()
         or next(S.expectPlace) ~= nil or next(S.expectRemoval) ~= nil or #S.deferred > 0
 end
 
+-- The game's simulation time in seconds, or nil where the game doesn't offer it (the test engine).
+local function simulationTime()
+    local f = MP.env and MP.env.getSimulationTime
+    if type(f) ~= "function" then return nil end
+    local ok, t = pcall(f)
+    if ok and type(t) == "number" then return t end
+    return nil
+end
+
 function MP.onTick()
     S.tick = S.tick + 1
     if not MP.paused then S.simTick = S.simTick + 1 end
     -- Lets the helper know the mod is running before it touches the tile map.
-    if S.tick % 10 == 0 then MP.emit("hb", { tick = S.tick, paused = MP.paused == true }) end
+    -- "sim" (the game's clock) lets the helpers keep every player's day and time of day together.
+    if S.tick % 10 == 0 then MP.emit("hb", { tick = S.tick, paused = MP.paused == true, sim = simulationTime() }) end
     processCandidates()
     scanKnown()
     flushPending()
@@ -468,7 +501,10 @@ MP.handlers.place = function(msg)
         placing.bIgnoreLandStatus = true
         placing.bIgnoreFocusAfterPlacing = true
         placing.bIgnoreInspectAfterPlacing = true
-        placing.bDestroyOnBlockedFinish = true
+        -- Kept when blocked, so flushPending can read why.
+        placing.bDestroyOnBlockedFinish = false
+        -- Paint the floor under it as the builder's tool did, e.g. grass for a house.
+        if msg.paint ~= nil then placing.bAutoPaintFloor = msg.paint == true end
         applyTemplate(e, msg.tpl, {}, true)
     end)
     if not ok then
@@ -477,7 +513,7 @@ MP.handlers.place = function(msg)
         MP.emit("blocked", { key = msg.key })
         error(err)
     end
-    S.placing[msg.key] = { entity = e, msg = msg, tries = msg.tries or 0, simTick = S.simTick }
+    S.placing[msg.key] = { entity = e, msg = msg, tries = msg.tries or 0, simTick = S.simTick, tick = S.tick }
 end
 
 -- Drops replayed placements of `key` that are waiting to run.
