@@ -233,8 +233,11 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
     cars, not a number written over.
   - It changes only people who are out of town (no position, not in a car), at most 20 per check, so no car vanishes
     from under its driver; the rest wait for their next trip out of town.
+  - A friend's game sells no cars itself. The car-shopping behavior asks `system.VehicleShop.tryBuy`, a plain Lua table
+    of the room, and on a friend's game the mod's version of it says no. So the sale doesn't flash money that the host's
+    wallet never gets, and no car is taken back later; the host's buyers get theirs from the list above.
   - Not covered: people who moved to town in the host's game only (newcomers are random on each PC) are counted and
-    skipped, and the car carousel's stock isn't shared (a friend's carousel can sell a car the host's still has).
+    skipped, and the carousel's stock on a friend's game stays as it was (it sells nothing there).
 - **Developer memory console.** With `--dev`, `multiplayer/runtime/devmem.txt` takes memory commands (`chain`,
   `tiles`, `read`, `find`, `save`/`diff`, and `write` with `--dev-write`), with results in `devmemout.txt`. They
   run in the helper, so they work while the game is paused. See `src/Sync/DevMemory.cs` and `docs/probes-0.5.md`.

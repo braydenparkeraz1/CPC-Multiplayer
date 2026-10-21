@@ -111,6 +111,20 @@ test("owners the friend's city doesn't have, and unknown kinds of car, are count
     eq(#w.logs > 0, true, "the unknown kind is logged")
 end)
 
+test("a friend's car carousels sell nothing; the host's do", function()
+    local w = city("client", { Ann = false })
+    local ann = w.room.getByName("Ann")
+    eq(w.room.system.VehicleShop.tryBuy(ann, 99), false, "refused")
+    eq(w:carOf("Ann"), nil, "no car")
+    eq(w.sold, 0, "nothing sold")
+    w:send({ type = "cars", owners = {} })
+    w:step(3)
+    eq(w:take("carsync")[1].refused, 1, "counted")
+    local h = city("host", { Bob = false })
+    eq(h.room.system.VehicleShop.tryBuy(h.room.getByName("Bob"), 99), true, "the host's sells")
+    eq(select(2, h:carOf("Bob")), "Cabriolet", "Bob's car")
+end)
+
 test("a big difference is worked off a few at a time", function()
     local people, wanted = {}, {}
     for i = 1, 45 do

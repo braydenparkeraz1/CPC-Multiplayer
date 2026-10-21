@@ -120,6 +120,16 @@ function Engine:makeRoom()
     room.setOnDestroyCallback = function() end
     room.tileMapSize = { x = 64, y = 8, z = 64 }
     room.getPricingId = function(name) return w:templateOf("pricing:" .. name) end
+    -- A car carousel that always has stock: the car is the buyer's at once.
+    w.sold = 0
+    room.system = { VehicleShop = { tryBuy = function(person, shop)
+        local v = w:create()
+        w:applyTemplate(v, "Cabriolet", true)
+        w.comps.VehicleOwner[person] = { vehicle = v }
+        w.comps.OwnedVehicle[v] = { owner = person }
+        w.sold = w.sold + 1
+        return true
+    end } }
     room.getName = function(e) return w.names[e] end
     room.setName = function(e, name)
         for other, n in pairs(w.names) do

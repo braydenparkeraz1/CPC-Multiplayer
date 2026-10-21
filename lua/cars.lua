@@ -9,6 +9,8 @@
 -- the same kind of car here, as the game's own Lua makes one (_person_vehicle_utils.lua: applyTemplate,
 -- VehicleOwner, OwnedVehicle); someone with a car here but not in the host's game loses it. Only people
 -- out of town are changed, so no car vanishes from under its driver; the rest wait for their next trip out.
+-- A friend's game sells no cars itself: its car carousels refuse every purchase (the sale would only flash
+-- money the host's wallet doesn't get, and the car would be taken back), and the host's buyers get theirs above.
 local MP = ...
 
 local S = MP.room
@@ -18,6 +20,26 @@ local CHECK_TICKS = 20    -- every 2 s
 local MAX_CHANGES = 20    -- per check, so a big difference doesn't stall one frame
 
 S.vehicles = S.vehicles or {}
+
+-- The car-shopping behavior (behavior/other/car_shopping.lua) asks system.VehicleShop.tryBuy, a plain Lua
+-- table of the room, which hands a car from the carousel's stock over and charges for it. On a friend's game
+-- it says no; the person goes home without a car, as when the carousel is empty.
+local shopSystem = type(system) == "table" and system.VehicleShop
+if type(shopSystem) == "table" and type(shopSystem.tryBuy) == "function" then
+    if not S.tryBuyWrapped then
+        S.tryBuyWrapped = true
+        local original = shopSystem.tryBuy
+        shopSystem.tryBuy = function(person, shop, ...)
+            if MP.role == "client" then
+                S.carsRefused = (S.carsRefused or 0) + 1
+                return false
+            end
+            return original(person, shop, ...)
+        end
+    end
+else
+    MP.log("cars: no system.VehicleShop.tryBuy, a friend's game can still sell cars")
+end
 
 local function templateOf(v)
     if not C.Persistent.has(v) then return nil end
@@ -84,7 +106,7 @@ end
 -- Friend: brings our owners in line with the host's list. Returns what it did and what waits.
 local function reconcile(wanted)
     local have, ents = ownersNow()
-    local status = { given = 0, taken = 0, waiting = 0, missing = 0 }
+    local status = { given = 0, taken = 0, waiting = 0, missing = 0, refused = S.carsRefused or 0 }
     local changes = 0
     for name, tpl in pairs(have) do
         if wanted[name] ~= tpl then
@@ -146,7 +168,7 @@ MP.carsTick = function()
         end
     elseif MP.role == "client" and S.carsWanted then
         local status = reconcile(S.carsWanted)
-        local sig = status.given .. "/" .. status.taken .. "/" .. status.waiting .. "/" .. status.missing
+        local sig = status.given .. "/" .. status.taken .. "/" .. status.waiting .. "/" .. status.missing .. "/" .. status.refused
         if status.given > 0 or status.taken > 0 or sig ~= S.carsStatus then
             S.carsStatus = sig
             MP.emit("carsync", status)

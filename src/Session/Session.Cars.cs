@@ -84,7 +84,8 @@ internal partial class Session
 	{
 		long given = Util.Int(d, "given") ?? 0, taken = Util.Int(d, "taken") ?? 0;
 		carsStatus = $"{carsFromHost?.Count ?? 0} owners in the host's city; last check gave {given}, took {taken}, " +
-			$"{Util.Int(d, "waiting") ?? 0} wait for their owner to leave town, {Util.Int(d, "missing") ?? 0} owners aren't in our city";
+			$"{Util.Int(d, "waiting") ?? 0} wait for their owner to leave town, {Util.Int(d, "missing") ?? 0} owners aren't in our city; " +
+			$"{Util.Int(d, "refused") ?? 0} purchases refused here so far";
 		if (given > 0 || taken > 0)
 		{
 			Ui.Log("cars: " + carsStatus);
