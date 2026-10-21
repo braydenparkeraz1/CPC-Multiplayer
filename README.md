@@ -63,6 +63,8 @@ Run every test with `tests\run.ps1` (see `tests/README.md`).
 `--dev` makes the helper check `multiplayer/runtime/devcmd.txt` in the game folder once a second. The whole file is run
 as one Lua chunk in the game (in the level's environment, like the `lua` command) and then deleted. Each result is
 appended to `multiplayer/runtime/devout.txt`. It is off by default. `docs/api-findings.md` lists what was learned with it.
+With `--allow-second-instance` (two helpers sharing one game folder), each player's console files carry the player's
+name: `devcmd_HostPC.txt`, `devout_HostPC.txt`, `devmem_HostPC.txt` and `devmemout_HostPC.txt`.
 
 It also checks `multiplayer/runtime/devmem.txt` for commands that look at the game's memory from outside (one per
 line; results in `devmemout.txt`), which work while the game is paused: `chain` (the city and its speed), `tiles`

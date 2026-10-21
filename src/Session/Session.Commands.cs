@@ -74,8 +74,18 @@ internal partial class Session
 		}
 	}
 
+	// With --allow-second-instance two helpers may share the game folder, so each player's console files
+	// get the player's name: devcmd_HostPC.txt, devout_HostPC.txt, ...
 	private string DevPath(string file)
 	{
+		if (opts.AllowSecondInstance && !string.IsNullOrEmpty(opts.Name))
+		{
+			string tag = System.Text.RegularExpressions.Regex.Replace(opts.Name, "[^A-Za-z0-9_-]", "");
+			if (tag.Length > 0)
+			{
+				file = Path.GetFileNameWithoutExtension(file) + "_" + tag + Path.GetExtension(file);
+			}
+		}
 		return Path.Combine(gameDir, "multiplayer", "runtime", file);
 	}
 
