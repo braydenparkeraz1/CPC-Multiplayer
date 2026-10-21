@@ -219,6 +219,7 @@ internal partial class Session
 		ResetSpeed();
 		ResetStats();
 		ResetCars();
+		ResetApplyToAll();
 		ResetPriceMap();
 		if (IsHost && wasInCity)
 		{

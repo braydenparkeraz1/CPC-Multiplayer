@@ -185,6 +185,7 @@ price isn't in memory where the helper can find it. Inbox `typevalue?` is answer
 | SpeedNoLayout | A game build the mod doesn't know: the helper says speed isn't shared, and builds still sync |
 | PriceLockedAtHost | "Apply to all" is ticked on the host: the client's price is undone there at first, the host's helper finds the stored price and changes it, and every entrance on both PCs ends at the client's price; the next change goes straight in |
 | PriceLockedTable | Like PriceLockedAtHost, but the stored price is a bare float among other prices (`FAKEGAME_LOCK_TABLE=1`), as in the game build checked; the host's helper finds it by its value |
+| ApplyToAllShared | The games keep the boxes and stored prices in the room like the real one (`FAKEGAME_ATA=1`). The host ticks parking with 0.3: the client's box is ticked with 0.3 and its entrances follow; the client's 0.5 reaches the host the same way; the host unticks and so does the client. No stored-price search runs |
 | PriceLockedHidden | The stored price can't be found: the host is told why friends can't change it, and the client goes back to the host's price |
 
 ClientBuildRejected now also checks that the client is told the game's reason.

@@ -750,6 +750,27 @@ function Scenario-PriceLockedTable {
     Expect-Latest "client keeps its price" $s.c $K1 "0.4"
 }
 
+function Scenario-ApplyToAllShared {
+    # The boxes and stored prices are read and written in each game's memory: whoever ticks or moves one,
+    # every game follows, and the games copy the price onto their objects themselves.
+    $env = @{ CPC_TEST_LAYOUT = "speedlayout.txt"; FAKEGAME_ATA = "1" }
+    $s = Start-HostAndClient $env $env
+    Game $s.h "price $K1 0.06"
+    Game $s.h "price $K2 0.06"
+    Expect-Latest "client has the host's prices" $s.c $K2 "0.06"
+    Expect "client finds the boxes" { HelperLog $s.c } "apply to all: found the boxes and stored prices" 1 15
+    Game $s.h "lock 0.3"
+    Expect "client's box is ticked with the host's price" { GameLog $s.c } "ata parking ticked=1 stored=0\.3\r?\n" 1 10
+    Expect-Latest "client's entrances follow" $s.c $K1 "0.3"
+    Game $s.c "lock 0.5"
+    Expect "host takes the client's price" { GameLog $s.h } "ata parking ticked=1 stored=0\.5\r?\n" 1 10
+    Expect-Latest "host's entrances follow" $s.h $K2 "0.5"
+    Expect "host is told" { HelperLog $s.h } "Clienty changed which prices 'apply to all' covers|apply to all" 1 10
+    Game $s.h "unlock"
+    Expect "client's box is unticked too" { GameLog $s.c } "ata parking ticked=0 stored=0\.5\r?\n" 1 10
+    if ((HelperLog $s.c) -match "price map: ") { throw "the client searched for the stored price" }
+}
+
 function Scenario-PriceLockedHidden {
     # The stored price can't be found: the host's price stands, and the host is told why.
     $s = Start-LockedHost @{ FAKEGAME_LOCK_HIDDEN = "1" }
@@ -969,7 +990,7 @@ $scenarios = @("HelperUnits", "LuaSync",
     "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
     "StatsHostToClient", "CarsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
-    "PriceLockedAtHost", "PriceLockedTable", "PriceLockedHidden")
+    "PriceLockedAtHost", "PriceLockedTable", "PriceLockedHidden", "ApplyToAllShared")
 if ($Only) {
     # "-File" passes "A,B" as one string.
     $Only = $Only | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() }

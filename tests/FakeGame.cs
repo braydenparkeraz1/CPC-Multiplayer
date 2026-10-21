@@ -29,7 +29,11 @@
 //                         price sits in native memory as the game's map node would hold it ("parking" as a
 //                         short std::string, then a float), unless FAKEGAME_LOCK_HIDDEN=1. With FAKEGAME_LOCK_TABLE=1
 //                         it's a bare float among other prices, as the game build checked keeps them (a table by
-//                         pricing id).
+//                         pricing id). With FAKEGAME_ATA=1 the box and the stored price are the game's two vectors in
+//                         the room (room+0x400: tick bits, room+0x420: prices; parking is pricing id 4), which
+//                         the helper reads and writes directly; changes to them are logged as
+//                         "ata parking ticked=<0|1> stored=<value>"
+//   unlock                the player unticked "apply to all" for parking
 // The money lives in native memory like the game's, so the helper has to find it by scanning this
 // process (inbox "moneymark") and reads or writes it there. Inbox "spend" charges it.
 // The speed sits in native memory behind the game's pointer chain (Level -> rooms[0] -> room+0x48c, see
@@ -144,7 +148,20 @@ internal static class FakeGame
 	// "Apply to all" for parking: the stored price, as a map node (string "parking", float at +0x30).
 	private static readonly IntPtr lockMem = Marshal.AllocHGlobal(0x40);
 
-	private static bool locked;
+	private static bool lockedFlag;
+
+	// FAKEGAME_ATA=1: the room's "apply to all" vectors, 15 kinds like the game.
+	private static readonly bool ataMode = Environment.GetEnvironmentVariable("FAKEGAME_ATA") == "1";
+
+	private static readonly IntPtr ataWords = Marshal.AllocHGlobal(8);
+
+	private static readonly IntPtr ataPrices = Marshal.AllocHGlobal(15 * 4);
+
+	private const int ParkingIndex = 3;
+
+	private static string ataLogged;
+
+	private static bool locked => ataMode ? (Marshal.ReadInt32(ataWords) & (1 << ParkingIndex)) != 0 : lockedFlag;
 
 	private static bool lockHidden;
 
@@ -203,6 +220,19 @@ internal static class FakeGame
 		Marshal.WriteInt64(roomsMem, roomMem.ToInt64());
 		Marshal.WriteInt64(roomMem, vtableMem.ToInt64());
 		Marshal.WriteInt64(roomMem, 0x598, statsSysMem.ToInt64());
+		// "Apply to all": vector<bool> (word pointer, end, capacity, bit count) and vector<float>, 15 kinds.
+		Marshal.WriteInt64(ataWords, 0);
+		for (int i = 0; i < 15; i++)
+		{
+			Marshal.WriteInt32(ataPrices, i * 4, BitConverter.ToInt32(BitConverter.GetBytes(i == ParkingIndex ? 0.06f : 1f + i), 0));
+		}
+		Marshal.WriteInt64(roomMem, 0x400, ataWords.ToInt64());
+		Marshal.WriteInt64(roomMem, 0x408, (ataWords + 4).ToInt64());
+		Marshal.WriteInt64(roomMem, 0x410, (ataWords + 4).ToInt64());
+		Marshal.WriteInt64(roomMem, 0x418, 15);
+		Marshal.WriteInt64(roomMem, 0x420, ataPrices.ToInt64());
+		Marshal.WriteInt64(roomMem, 0x428, (ataPrices + 60).ToInt64());
+		Marshal.WriteInt64(roomMem, 0x430, (ataPrices + 60).ToInt64());
 		Marshal.WriteInt64(statsSysMem, statsVtableMem.ToInt64());
 		StatsSnapshot();
 		SetSpeed(1f);
@@ -210,7 +240,7 @@ internal static class FakeGame
 		if (!string.IsNullOrEmpty(layout))
 		{
 			File.WriteAllText(layout, "levelPtr " + levelPtrCell.ToString("x") + "\nroomVtable " + vtableMem.ToString("x") +
-				"\nstatsVtable " + statsVtableMem.ToString("x") + "\n");
+				"\nstatsVtable " + statsVtableMem.ToString("x") + (ataMode ? "\napplyToAll 1" : "") + "\n");
 		}
 	}
 
@@ -253,6 +283,11 @@ internal static class FakeGame
 
 	private static double LockValue()
 	{
+		if (ataMode)
+		{
+			float stored = BitConverter.ToSingle(BitConverter.GetBytes(Marshal.ReadInt32(ataPrices, ParkingIndex * 4)), 0);
+			return double.Parse(stored.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+		}
 		if (lockHidden)
 		{
 			return hiddenLock;
@@ -262,9 +297,46 @@ internal static class FakeGame
 		return double.Parse(f.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
 	}
 
+	// The game's vectors as the helper sees them, logged when they change.
+	private static void AtaTick()
+	{
+		if (!ataMode)
+		{
+			return;
+		}
+		string now = "ata parking ticked=" + (locked ? 1 : 0) + " stored=" + Num(LockValue());
+		if (now != ataLogged)
+		{
+			ataLogged = now;
+			Log(now);
+		}
+	}
+
+	private static void Unlock()
+	{
+		if (ataMode)
+		{
+			Marshal.WriteInt32(ataWords, Marshal.ReadInt32(ataWords) & ~(1 << ParkingIndex));
+		}
+		lockedFlag = false;
+		Log("unlocked parking");
+	}
+
 	private static void Lock(double v)
 	{
-		locked = true;
+		if (ataMode)
+		{
+			// The player ticks the box with this price: the stored price, then the bit.
+			Marshal.WriteInt32(ataPrices, ParkingIndex * 4, BitConverter.ToInt32(BitConverter.GetBytes((float)v), 0));
+			Marshal.WriteInt32(ataWords, Marshal.ReadInt32(ataWords) | (1 << ParkingIndex));
+			foreach (string key in prices.Keys.ToList())
+			{
+				prices[key] = v;
+			}
+			Log("locked parking at " + Num(v) + " (in the room)");
+			return;
+		}
+		lockedFlag = true;
 		lockHidden = Environment.GetEnvironmentVariable("FAKEGAME_LOCK_HIDDEN") == "1";
 		hiddenLock = v;
 		for (int i = 0; i < 0x40; i++)
@@ -616,6 +688,9 @@ internal static class FakeGame
 		case "lock":
 			Lock(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
+		case "unlock":
+			Unlock();
+			break;
 		case "sneak":
 			objects.Add(arg);
 			break;
@@ -915,6 +990,7 @@ internal static class FakeGame
 				EmitDigest();
 			}
 			LockTick();
+			AtaTick();
 			if (markUndoAt >= 0 && tick >= markUndoAt)
 			{
 				markUndoAt = -1;

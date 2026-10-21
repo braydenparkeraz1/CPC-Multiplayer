@@ -19,10 +19,12 @@ namespace CpcMultiplayer;
 //   [room + StatsSystem]    the Stats system, vtable exe + StatsVtable, with its vector of snapshots
 //                           (one every 4 game seconds) at StatsRecords: begin, end. The last one is what
 //                           the HUD shows (carbrainness, civil unrest, car dependency progress).
+//   room + ApplyToAllTicks  "apply to all" boxes, one bit per kind of price; room + ApplyToAllPrices: the
+//                           stored prices (see ApplyToAllSync)
 //
 // Tests (FakeGame) put the same structure in their own memory and name it with CPC_TEST_LAYOUT: a file,
 // relative to the game folder, holding "levelPtr <address>", "roomVtable <address>" and "statsVtable <address>"
-// in hex.
+// in hex, and "applyToAll 1" when it keeps the "apply to all" vectors in the room like the game.
 internal class NativeLayout
 {
 	public const long RoomsBegin = 0x10;
@@ -44,6 +46,10 @@ internal class NativeLayout
 
 	public const int StatsSharedLength = 0x90;
 
+	public const long ApplyToAllTicks = 0x400;
+
+	public const long ApplyToAllPrices = 0x420;
+
 	private class Build
 	{
 		public string Sha256;
@@ -53,6 +59,8 @@ internal class NativeLayout
 		public long RoomVtable;
 
 		public long StatsVtable;
+
+		public bool HasApplyToAll;
 	}
 
 	private static readonly Build[] Builds =
@@ -62,7 +70,8 @@ internal class NativeLayout
 			Sha256 = "97DCE8EFF169634AD613401E7DABEA17EF6D9D02654823C342BBC43FFC684A87",
 			LevelPtr = 0x1bbaa10,
 			RoomVtable = 0x17bf968,
-			StatsVtable = 0x17c0330
+			StatsVtable = 0x17c0330,
+			HasApplyToAll = true
 		}
 	};
 
@@ -74,6 +83,17 @@ internal class NativeLayout
 	public long RoomVtable;
 
 	public long StatsVtable;
+
+	public bool HasApplyToAll;
+
+	// The open city's room, or 0 when there's none (or the chain looks wrong). readPtr reads 8 bytes, 0 on failure.
+	public long FindRoom(Func<long, long> readPtr)
+	{
+		long level = readPtr(LevelPtr);
+		long roomsBegin = level == 0 ? 0 : readPtr(level + RoomsBegin);
+		long room = roomsBegin == 0 ? 0 : readPtr(roomsBegin);
+		return room != 0 && readPtr(room) == RoomVtable ? room : 0;
+	}
 
 	// Null when this game build isn't one we know (Why says so).
 	public static NativeLayout For(string gameDir, int pid, out string why)
@@ -108,7 +128,7 @@ internal class NativeLayout
 			why = "can't see the game's memory layout (" + ex.Message + ")";
 			return null;
 		}
-		return new NativeLayout { LevelPtr = baseAddress + build.LevelPtr, RoomVtable = baseAddress + build.RoomVtable, StatsVtable = baseAddress + build.StatsVtable };
+		return new NativeLayout { LevelPtr = baseAddress + build.LevelPtr, RoomVtable = baseAddress + build.RoomVtable, StatsVtable = baseAddress + build.StatsVtable, HasApplyToAll = build.HasApplyToAll };
 	}
 
 	private static NativeLayout FromTestFile(string path, out string why)
@@ -136,6 +156,10 @@ internal class NativeLayout
 				else if (parts[0] == "statsVtable")
 				{
 					layout.StatsVtable = v;
+				}
+				else if (parts[0] == "applyToAll")
+				{
+					layout.HasApplyToAll = v != 0;
 				}
 			}
 			if (layout.LevelPtr != 0 && layout.RoomVtable != 0)

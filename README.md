@@ -203,10 +203,14 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
     followed by the price, checked by writing the friend's price and seeing every object take it) and changes it.
   - If it can't be found, the host's price stands and the player whose game holds it is told to untick
     "apply to all".
-  - Ticking or unticking the box itself is still each player's own: the game keeps the ticked kinds in a native
-    container (`money.syncedPrices`, name -> price) that only its UI changes. The prices still end up the same.
-  - In the game build checked the stored prices aren't next to their names in memory but in a table of floats, so
-    the helper falls back to finding the price by its value (`src/Sync/PriceMapSync.cs`).
+  - The boxes themselves are shared too, and so is each kind's stored price: in the game build checked they are two
+    vectors in the city room, one bit and one float per kind in pricing-id order (`room + 0x400`: the boxes as a
+    `std::vector<bool>`, `room + 0x420`: the prices), found 2026-10-20 and checked by ticking a box from outside.
+    Each helper reads its game's every 0.25 s and sends a change on; the others write it in, last change wins (like
+    pause and speed). The games then copy the stored price onto their objects themselves
+    (`src/Sync/ApplyToAllSync.cs`, `src/Session/Session.ApplyToAll.cs`).
+  - With another game build the helper falls back to the stored-price search above, by name and then by value
+    (`src/Sync/PriceMapSync.cs`), and the boxes stay each player's own.
 - **A friend's suburban home no longer fails in the host's city.** The house turns its plot to Dirt while it's
   built, and those floor changes reached the host before the house did. The house needs Grass, so the host's game
   refused it, and the Dirt left behind made every retry fail too.
@@ -363,6 +367,7 @@ Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 | `src/Session/Session.Prices.cs` | Prices: our game's edits, the host's table and its broadcasts |
 | `src/Session/Session.Money.cs` | Money: finding, reading and writing the wallet, friends' spends |
 | `src/Session/Session.Speed.cs` | Pause and game speed, and keeping the clocks together |
+| `src/Session/Session.ApplyToAll.cs`, `src/Sync/ApplyToAllSync.cs` | "Apply to all": the boxes and stored prices, in the game's memory, last change wins |
 | `src/Session/Session.Cars.cs` | Who owns which car: the host's mod's list to every friend's mod |
 | `src/Session/Session.Stats.cs`, `src/Sync/StatsSync.cs` | City statistics: the host's newest snapshot over each friend's own |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
@@ -384,7 +389,7 @@ Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 | `src/Game/GameInstall.cs` | Finds the game (Steam library or parent folders), copies the Lua files in, and patches 3 game scripts between `-- [cpc-multiplayer] begin/end` markers |
 | `src/Game/GameProcess.cs` | Starts `carparkcapital.exe -mpsession <id>`, reads its stdout, force-closes it |
 | `src/Game/Prices.cs`, `SaveFile.cs` | Build and tile prices from the game's scripts; the balance in a save (zlib + CBOR) |
-| `src/Game/Inbox.cs`, `Lua.cs` | Writes `multiplayer/runtime/inbox_<id>.lua`, the helperâ†’game message channel |
+| `src/Game/Inbox.cs`, `Lua.cs` | Writes `multiplayer/runtime/inbox_<id>.lua`, the helper→game message channel |
 | `lua/boot.lua` | In-game bootstrap: loaded from the main menu and from every level; runs a 0.1 s tick, or a frame-driven one while paused |
 | `lua/inbox.lua` | Polls the inbox file, dispatches messages (`hello`, `loadworld`, `leave`, `eval`), acks |
 | `lua/util.lua` | JSON encoder; `MP.emit` prints `MP>{json}` to stdout |
@@ -410,31 +415,32 @@ Anything else on the port is ignored.
 
 | Type | Direction | Meaning |
 |---|---|---|
-| `hello` / `welcome` | client â†’ host / host â†’ client | Join, with name and mod version |
-| `refused` | host â†’ client | Not let in (`reason`), e.g. a different mod version (0.4.0) |
-| `world?` / `world` | client â†’ host / host â†’ client | Ask for / send the city (base64 save, plus newer builds, tiles and land) |
+| `hello` / `welcome` | client → host / host → client | Join, with name and mod version |
+| `refused` | host → client | Not let in (`reason`), e.g. a different mod version (0.4.0) |
+| `world?` / `world` | client → host / host → client | Ask for / send the city (base64 save, plus newer builds, tiles and land) |
 | `ev` | both | Object placed, demolished or removed (`ev.type`, `ev.key`). From a client it's a proposal |
-| `ok` / `undo` | host â†’ client | The host's game placed a client's build / couldn't, so everyone takes it back (`key`, and `reason` in words when the game gave one) (0.4.0, 0.5.0) |
+| `ok` / `undo` | host → client | The host's game placed a client's build / couldn't, so everyone takes it back (`key`, and `reason` in words when the game gave one) (0.4.0, 0.5.0) |
 | `tiles`, `land` | both | Changed roads/floors (6 bytes each) and land ownership (5 bytes each), base64. From a client with `seq` |
-| `tilesok`, `landok` | host â†’ client | The host applied the client's changes up to `seq` (0.4.0) |
-| `digest` | host â†’ client | Every 5 s: `objects` (64 Ã— "count:hash"), `tiles` and `land` (64 area hashes), `busy` (0.4.0) |
-| `keys?` / `keys` | client â†’ host / host â†’ client | The host's object keys in one `bucket`, for a repair (0.4.0) |
-| `area?` / `area` | client â†’ host / host â†’ client | The host's tiles and land in one map `area`, deflated and base64, for a repair (0.4.0) |
+| `tilesok`, `landok` | host → client | The host applied the client's changes up to `seq` (0.4.0) |
+| `digest` | host → client | Every 5 s: `objects` (64 × "count:hash"), `tiles` and `land` (64 area hashes), `busy` (0.4.0) |
+| `keys?` / `keys` | client → host / host → client | The host's object keys in one `bucket`, for a repair (0.4.0) |
+| `area?` / `area` | client → host / host → client | The host's tiles and land in one map `area`, deflated and base64, for a repair (0.4.0) |
 | `chat`, `players?` | both | Chat and player list |
 | `ping` | both | Keep-alive, every 3 s (0.3.0). `at`: the sender's clock (ms since 1970, UTC), for the playtest log |
 | `note` | both | A player's `note` (`name`, `text`), only written to the playtest log. The host passes it on |
-| `log` | client â†’ host | Lines of the client's playtest log: `run` (its file name), `from` (number of the first line, from 0), `lines`. At most 128 KB a second; not logged themselves |
-| `hostleft` | host â†’ client | The host left its city (0.3.0) |
-| `bye` | host â†’ client | The host is shutting down (0.3.0) |
-| `setting` | client â†’ host | The client's player changed a price: `key`, `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) and `seq`, which counts up (0.4.0) |
-| `settings` | host â†’ client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`). `ack` is the newest `seq` from this client the host had applied; the client skips objects it changed after that (0.4.0) |
-| `sync?` | client â†’ host | Sent after loading the host's city: asks for every current price and the money (0.4.0) |
-| `spend` | client â†’ host | The client's build or demolition: `id` (counts up), `amount` (negative for a refund), `reason`, `key`. Applied once per `id` (0.4.0) |
-| `money` | host â†’ client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). When it changes (at most every 0.2 s), at least every 5 s, and after `sync?` (0.4.0, 0.5.0) |
+| `log` | client → host | Lines of the client's playtest log: `run` (its file name), `from` (number of the first line, from 0), `lines`. At most 128 KB a second; not logged themselves |
+| `hostleft` | host → client | The host left its city (0.3.0) |
+| `bye` | host → client | The host is shutting down (0.3.0) |
+| `setting` | client → host | The client's player changed a price: `key`, `fields` (`{"ParkingEntry.ratePerMinute": 0.37}`) and `seq`, which counts up (0.4.0) |
+| `settings` | host → client | Prices of changed objects (`entries`, every 2 s) or of all objects (`full`, every 30 s and after `sync?`). `ack` is the newest `seq` from this client the host had applied; the client skips objects it changed after that (0.4.0) |
+| `sync?` | client → host | Sent after loading the host's city: asks for every current price and the money (0.4.0) |
+| `spend` | client → host | The client's build or demolition: `id` (counts up), `amount` (negative for a refund), `reason`, `key`. Applied once per `id` (0.4.0) |
+| `money` | host → client | The host's balance (`value`) and the newest spend `id` from this client its game has applied (`ack`). When it changes (at most every 0.2 s), at least every 5 s, and after `sync?` (0.4.0, 0.5.0) |
 | `speed` | both | Pause or game speed (`value`, 0 = paused). From a client with `seq`; from the host with `ack` (the newest `seq` from this client it applied) and `by` (who changed it, or null for a repeat). The host repeats it every 5 s and after `sync?` (0.5.0) |
-| `clock` | host â†’ client | The host's game clock in simulation seconds (`sim`), every 2 s while it runs (0.5.0) |
-| `cars` | host â†’ client | Who owns which car in the host's city: `owners`, name â†’ car template. When it changes, and after `sync?` (0.5.0) |
-| `stats` | host â†’ client | The host's newest city statistics snapshot: its game `time` and `data`, the 144 shared bytes in base64. When it changes (at most every 0.5 s), at least every 5 s (0.5.0) |
+| `clock` | host → client | The host's game clock in simulation seconds (`sim`), every 2 s while it runs (0.5.0) |
+| `cars` | host → client | Who owns which car in the host's city: `owners`, name → car template. When it changes, and after `sync?` (0.5.0) |
+| `applytoall` | both | The "apply to all" boxes (`ticks`, bit i = pricing id i+1) and stored `prices`. From a client with `seq`; from the host with `ack` and `by` (who changed it). The host repeats it every 5 s and after `sync?` (0.5.0) |
+| `stats` | host → client | The host's newest city statistics snapshot: its game `time` and `data`, the 144 shared bytes in base64. When it changes (at most every 0.5 s), at least every 5 s (0.5.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
 `demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, `menu`, and `trace`, which only goes in the playtest log), and the
@@ -442,7 +448,7 @@ helper writes messages to the inbox file (`hello`, `loadworld`, `leave`, `place`
 `reconcile`, `paint`, `eval`, `menu`).
 The main menu: inbox `menu` (`lines`: up to 2 strings, `buttons`: `{id, label}`; each replaces the last) is what it
 shows, and the mod's `menu` (`click`: a button's `id`) is a click.
-Prices add `setting` (game â†’ helper, a local
+Prices add `setting` (game → helper, a local
 change, with its own `seq`), inbox `settings` (apply these; `seen` is the newest `seq` the helper had, so the game skips
 values for a field it changed later), inbox `settings?` (reply with all values) and its `settings` reply. For money:
 inbox `moneymark` (`mark`, `amount`: add it, take it back ~0.5 s later, reporting each step as `moneymark`) and inbox

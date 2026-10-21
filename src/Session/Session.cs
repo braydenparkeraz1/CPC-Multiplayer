@@ -29,6 +29,7 @@ namespace CpcMultiplayer;
 //   Session.Speed.cs     pause and game speed (in the game's memory), and keeping the clocks together
 //   Session.Stats.cs     the city statistics (carbrainness, civil unrest, car dependency): the host's
 //   Session.Cars.cs      who owns which car: the host's, so the car dependency level follows real cars
+//   Session.ApplyToAll.cs the "apply to all" boxes and stored prices (in the game's memory), last change wins
 //   Session.Commands.cs  console and control-file commands
 //   Session.Log.cs       the playtest log: snapshots of all of the above, players' notes
 internal partial class Session
@@ -265,6 +266,14 @@ internal partial class Session
 			Ui.Log("stats sync error: " + ex);
 		}
 		CarsTick();
+		try
+		{
+			ApplyToAllTick();
+		}
+		catch (Exception ex)
+		{
+			Ui.Log("apply-to-all sync error: " + ex);
+		}
 		TileTick();
 		DriftTick();
 		UpdateMenu();
@@ -352,6 +361,7 @@ internal partial class Session
 		ResetSpeed();
 		ResetStats();
 		ResetCars();
+		ResetApplyToAll();
 		ResetDrift();
 	}
 

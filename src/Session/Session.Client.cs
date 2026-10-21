@@ -276,6 +276,9 @@ internal partial class Session
 		case "cars":
 			OnHostCars(m);
 			break;
+		case "applytoall":
+			OnHostApplyToAll(m);
+			break;
 		case "money":
 			OnHostMoney(m);
 			break;
