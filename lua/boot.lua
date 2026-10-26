@@ -65,6 +65,7 @@ MP.context = context
 MP.env = env
 MP.hostEntity = hostEntity
 MP.onTick = nil
+MP.onFrame = nil
 
 loadModule("util", MP)
 loadModule("inbox", MP)
@@ -131,6 +132,15 @@ local function frame()
     if MP.generation ~= generation then
         pcall(setUpdateFunction, hostEntity, 0.0, nil)
         return
+    end
+    -- Work that can't wait for a tick (sync.lua: demolitions that last one frame). It runs every frame,
+    -- so an error stops it instead of filling the log.
+    if MP.onFrame then
+        local ok, err = pcall(MP.onFrame)
+        if not ok then
+            MP.onFrame = nil
+            MP.log("frame error, stopped: " .. tostring(err))
+        end
     end
     framesSinceTimer = framesSinceTimer + 1
     if framesSinceTimer < STALL_FRAMES then return end

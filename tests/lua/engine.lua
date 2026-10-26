@@ -7,7 +7,9 @@
 --     entity goes away and the placed object is created by the template, or it is blocked when its
 --     tile is taken (objects here are one tile big)
 --   * the build tool: a preview ghost (Placing without Persistent) next to the placed object
---   * a demolition (Demolished) removing the object a few ticks later
+--   * a demolition (Demolished) removing the object a few ticks later; the demolish tool's, as measured in
+--     the game, only lasts one frame (timeUntilDestroy 0) before the object is destroyed
+--   * the frame callback (MP.onFrame) once per tick
 --   * prices (ParkingEntry, Pricing) and "apply to all": with syncedPrices[kind] set, every update
 --     copies it onto every object of that kind, as the game does with money.syncedPrices
 --   * people and their cars (Person, Vehicle, VehicleOwner, OwnedVehicle; Transform while in town),
@@ -221,11 +223,15 @@ function Engine:playerBuild(tpl, x, y, z, rot, var, paint)
     return e
 end
 
+-- Our player demolishes something with the demolish tool: the game marks it Demolished for one frame,
+-- then destroys it, between two of the mod's ticks.
 function Engine:playerDemolish(e)
-    self.room.component.Demolished.getFor(e)
+    self.comps.Demolished[e] = { timeUntilDestroy = 0 }
+    if self.MP and self.MP.onFrame then self.MP.onFrame() end
+    self:destroy(e)
 end
 
--- The game removes an object without a demolition (sold, cleaned up, replaced).
+-- The game removes an object without a demolition (protest damage, fire, sold, cleaned up, replaced).
 function Engine:vanish(e)
     self:destroy(e)
 end
@@ -284,6 +290,7 @@ end
 function Engine:step(n)
     for _ = 1, n or 1 do
         self:update()
+        if self.MP.onFrame then self.MP.onFrame() end
         self.MP.onTick()
     end
 end

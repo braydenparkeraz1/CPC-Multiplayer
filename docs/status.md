@@ -31,6 +31,7 @@ Two copies of the game on one PC (host and friend), city `ix`.
 | Suburban homes and the McCarMansion built by a friend | Works (the house paints its own plot) |
 | City statistics on the HUD: carbrainness, civil unrest, need fulfilment, car dependency progress (0.5.0+) | Works: the friend's newest stats snapshot is overwritten with the host's |
 | Car ownership (0.5.0+) | Works: the friend's helper log showed it following the host's 97 owners, none waiting or missing |
+| Protest damage, the host's only (branch `fix/protest-damage`) | Works (2026-10-26, city copy `mpcheck`): a lamppost destroyed on the friend's game wasn't sent and came back in 7 s; the friend's demolish tool reached the host as `demolish` at once, refund included; the host's own protest damage still reached the friend; no protest banners sent |
 | A friend's car carousel sells nothing (0.5.0+) | In place (`system.VehicleShop.tryBuy` refuses on a friend's game); never seen refusing, because both carousels were empty during the tests |
 
 ## Not shared yet, in the user's order of importance
@@ -59,7 +60,9 @@ entering and leaving lots and drive-thrus, car sales, and protests. 1:1 position
      copies there instead of driving them, so they leave lots and pay when the host's do.
 3. **Protests.** They already start in the same place on both games (shared unrest and buildings) with different
    people. A protester is a `Person` with `Protesting` (`leader`, cooldowns), `ProtestBlockingTarget` (`target`) and
-   `PersonFSM.state` 700; the banner is a `ProtestBanner` entity.
+   `PersonFSM.state` 700; the banner is a `ProtestBanner` entity. Only the host's protest damage reaches the city now
+   (branch `fix/protest-damage`): a friend's game keeps what its own protesters wreck to itself, and gets the host's
+   copy back.
 4. **Land** (map overlay and eviction): `docs/probes-0.5.md` section B.
 5. **People who exist only on the host** (newcomers are random on each PC): counted as `missing` by car ownership.
 6. The Car Dependency **level** (`room + 0x240`) levels up from each game's own counts. The user wants that to follow

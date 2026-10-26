@@ -26,6 +26,12 @@ local OWN_BUILD_WAIT = 150     -- a client's own build may be in the way for thi
 local DIGEST_TICKS = 20        -- how often the digest goes to the helper
 local BUCKETS = 64
 local RECENT_LOCAL_TICKS = 100 -- a repair never takes out what our player built in the last 10s
+local OWN_BUILD_CLEARS = 30    -- on a friend's game, objects that vanish this soon after our player's build were
+                               -- cleared by it (trees under a new building), so they're reported as removed
+
+-- Objects the game makes by itself during a protest. Every game has its own protests, so these aren't
+-- shared, not even the ones saved with the city.
+local LOCAL_ONLY = { ProtestBanner = true }
 
 S.known = S.known or {}            -- entity -> key
 S.byKey = S.byKey or {}            -- key -> entity
@@ -38,6 +44,7 @@ S.expectRemoval = S.expectRemoval or {}       -- key -> simTick the replayed dem
 S.removeAfterPlace = S.removeAfterPlace or {}
 S.pendingRemovals = S.pendingRemovals or {}   -- key -> tick the object vanished
 S.demolishing = S.demolishing or {}           -- entity -> tick its demolition started (it stays until done)
+S.demolishSeen = S.demolishSeen or {}         -- entity -> true: MP.onFrame saw it marked Demolished
 S.deferred = S.deferred or {}
 S.delayed = S.delayed or {}                   -- { tick = <run at>, msg = <place message> }
 S.placing = S.placing or {}                   -- key -> replayed placement in progress
@@ -79,7 +86,7 @@ MP.bucketOfKey = function(key) return bucketOf(hashKey(key)) end
 local KEY_PATTERN = "^[%w_]+@%d+,%d+,%d+/%d+/%d+$"
 
 local function track(key)
-    if S.tracked[key] or not key:match(KEY_PATTERN) then return end
+    if S.tracked[key] or not key:match(KEY_PATTERN) or LOCAL_ONLY[key:match("^[%w_]+")] then return end
     local h = hashKey(key)
     S.tracked[key] = h
     local b = bucketOf(h) + 1
@@ -207,6 +214,19 @@ local function processCandidates()
     end
 end
 
+-- The demolish tool marks an object Demolished for a single frame (timeUntilDestroy 0) before the game
+-- destroys it, far too short for scanKnown, which sees each object every few ticks. So every frame checks
+-- every object for it (about 0.6 ms for a city of 11,000, measured in the game). An object that goes
+-- without the mark was taken by the game itself: protesters, fire (also measured in the game).
+function MP.onFrame()
+    if MP.role == "lobby" then return end
+    local list, has, seen = S.scanList, component.Demolished.has, S.demolishSeen
+    for i = 1, #list do
+        local e = list[i]
+        if has(e) then seen[e] = true end
+    end
+end
+
 local function scanKnown()
     local list = S.scanList
     local budget = math.min(SCAN_PER_TICK, #list)
@@ -214,9 +234,10 @@ local function scanKnown()
         if S.scanPos > #list then S.scanPos = 1 end
         local e = list[S.scanPos]
         local gone = not valid(e)
-        local demolished = not gone and component.Demolished.has(e)
+        local demolished = S.demolishSeen[e] or (not gone and component.Demolished.has(e))
         if gone or demolished or not S.known[e] then
             local key = unindex(e)
+            S.demolishSeen[e] = nil
             if demolished then S.demolishing[e] = S.tick end
             list[S.scanPos] = list[#list]
             list[#list] = nil
@@ -233,6 +254,11 @@ local function scanKnown()
                 elseif demolished then
                     untrack(key)
                     MP.emit("demolish", { key = key })
+                elseif MP.role == "client" and S.tick - S.lastLocalBuild > OWN_BUILD_CLEARS then
+                    -- The game's own doing, and every game has its own protests: only the host's city
+                    -- decides. The host's copy comes back with the next repair.
+                    MP.trace("vanished", { key = key, shared = false })
+                    untrack(key)
                 else
                     MP.trace("vanished", { key = key })
                     S.pendingRemovals[key] = S.tick

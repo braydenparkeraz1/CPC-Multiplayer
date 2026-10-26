@@ -247,6 +247,22 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
     wallet never gets, and no car is taken back later; the host's buyers get theirs from the list above.
   - Not covered: people who moved to town in the host's game only (newcomers are random on each PC) are counted and
     skipped, and the carousel's stock on a friend's game stays as it was (it sells nothing there).
+- **Protest damage counts once, the host's.** Each game runs its own protests, and protesters wreck street lamps,
+  benches, bins and hydrants. A friend's game reported what its protesters wrecked as removals, so the host's city
+  lost those too, and the city took the damage of both games' protests (about 60 objects on each side in 80 minutes
+  of one playtest).
+  - A friend's game no longer reports an object that disappears by itself. Only the host's game decides those, and
+    the host's copy comes back on the friend's game with the next repair (within about 15 s).
+  - A player's demolition still counts on every game. The demolish tool marks the object `Demolished` for a single
+    frame (`timeUntilDestroy` 0) and the game destroys it on the next one; the game's own damage leaves no mark.
+    Both were measured in the game (2026-10-26). The mod checked each object only every few ticks, so it never saw
+    the mark, and every demolition so far reached the others as a "vanished" object.
+  - So every frame the mod now checks every shared object for the mark (`MP.onFrame` in `lua/sync.lua`; about
+    0.6 ms per frame for a city of 11,000 objects, measured). A demolition is reported as `demolish` at once, from
+    the host as well; it used to wait 1.5 s as a removal.
+  - Something that disappears within 3 s of the friend's own build still counts, because that build cleared it
+    (trees under a new building).
+  - Protest banners aren't shared at all, not even the ones saved with the city: they're each game's own protest.
 - **Developer memory console.** With `--dev`, `multiplayer/runtime/devmem.txt` takes memory commands (`chain`,
   `tiles`, `read`, `find`, `save`/`diff`, and `write` with `--dev-write`), with results in `devmemout.txt`. They
   run in the helper, so they work while the game is paused. See `src/Sync/DevMemory.cs` and `docs/probes-0.5.md`.
@@ -260,6 +276,7 @@ underneath isn't:
   host's wallet (the one that counts) doesn't have, and the balance jumps back.
 - What citizens will pay at a booth follows each PC's own simulation, but not the money: the wallet is the host's.
 - Protests start on each PC from the shared civil unrest and buildings, often in the same place, but with other people.
+  Only the damage done in the host's game is shared (above).
 - Land bought by a friend shows as owned when hovered and can be built on, but stays dark on the map, and eviction
   there says it isn't owned. The map overlay and the eviction check use state the game only updates through its own
   purchase code.
