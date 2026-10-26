@@ -18,10 +18,10 @@ local function eq(actual, expected, what)
     end
 end
 
--- A city with a few objects, loaded and indexed (past the 2 s baseline).
-local function city(objects)
+-- A city with a few objects, loaded and indexed (past the 2 s baseline). role: "host" or "client" (nil acts as the host).
+local function city(objects, role)
     local w = Engine.new(root)
-    w:bootMod()
+    w:bootMod(false, role)
     for _, o in ipairs(objects or {}) do w:spawnPlaced(o[1], o[2], o[3], o[4], o[5], o[6]) end
     w:step(25)
     return w
@@ -99,6 +99,59 @@ test("objects the game makes by itself are not shared", function()
     w:vanish(spill)
     w:step(30)
     eq(#w:take("remove"), 0, "its removal isn't reported")
+end)
+
+-- ---- what the game takes by itself (protests, fire) ----
+
+test("a friend's demolition with the tool is reported at once, though it lasts one frame", function()
+    local w = city({ { "Bench", 1, 1, 1 } }, "client")
+    w:playerDemolish(w:objectAt(1, 1, 1))
+    w:step()
+    eq(count(w:take("demolish"), "key", "Bench@1,1,1/0/0"), 1, "demolish")
+    check(not tracked(w, "Bench@1,1,1/0/0"), "untracked")
+end)
+
+test("the host reports what its game takes", function()
+    local w = city({ { "Lamppost", 1, 1, 1 } }, "host")
+    w:vanish(w:objectAt(1, 1, 1))
+    w:step(20)
+    eq(count(w:take("remove"), "key", "Lamppost@1,1,1/0/0"), 1, "remove")
+end)
+
+test("a friend doesn't report what its game takes, and the host's repair puts it back", function()
+    local host = city({ { "Lamppost", 1, 1, 1 }, { "Bench", 2, 1, 1 } }, "host")
+    local client = city({ { "Lamppost", 1, 1, 1 }, { "Bench", 2, 1, 1 } }, "client")
+    client:vanish(client:objectAt(1, 1, 1))
+    client:step(30)
+    eq(#client:take("remove") + #client:take("demolish"), 0, "nothing reported")
+    check(not tracked(client, "Lamppost@1,1,1/0/0"), "untracked here")
+    check(client:digest() ~= host:digest(), "the digests show the difference")
+    local bucket = client.MP.bucketOfKey("Lamppost@1,1,1/0/0")
+    host:send({ type = "dump", req = 1, bucket = bucket })
+    local reply = host:take("keys")[1]
+    client:send({ type = "reconcile", bucket = bucket, keys = reply.keys, here = reply.here })
+    client:step(10)
+    eq(client:keyAt(1, 1, 1), "Lamppost@1,1,1/0/0", "back on the friend's game")
+    eq(client:digest(), host:digest(), "digests match")
+end)
+
+test("a friend reports what vanishes right after its own build (cleared by it)", function()
+    local w = city({ { "Oak", 6, 1, 6 } }, "client")
+    w:playerBuild("House", 5, 1, 5)
+    w:vanish(w:objectAt(6, 1, 6))
+    w:step(20)
+    eq(count(w:take("place"), "key", "House@5,1,5/0/0"), 1, "the build")
+    eq(count(w:take("remove"), "key", "Oak@6,1,6/0/0"), 1, "the tree it cleared")
+end)
+
+test("protest banners are never shared", function()
+    local host = city({ { "Bench", 1, 1, 1 }, { "ProtestBanner", 3, 1, 3, 0, 4 } }, "host")
+    local client = city({ { "Bench", 1, 1, 1 } }, "client")
+    check(not tracked(host, "ProtestBanner@3,1,3/0/4"), "not tracked")
+    eq(client:digest(), host:digest(), "a banner only one game has makes no difference")
+    host:vanish(host:objectAt(3, 1, 3))
+    host:step(20)
+    eq(#host:take("remove"), 0, "its end isn't reported")
 end)
 
 -- ---- replaying other players' builds ----
