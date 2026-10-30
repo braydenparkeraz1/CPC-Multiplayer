@@ -7,7 +7,7 @@ The README has the user-facing description of each feature; `docs/probes-0.5.md`
 
 | Branch | State |
 |---|---|
-| `main` (`bbe06a1` pushed; later merges local) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/`; then protest damage (`fix/protest-damage`) and car carousels following the host (`feature/carousel-sync`, merged 2026-10-29) |
+| `main` (pushed) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/`; then protest damage (`fix/protest-damage`) and car carousels following the host (`feature/carousel-sync`, merged 2026-10-29) |
 
 The game is installed at `C:\Games\Car Park Capital`. `CPC-Multiplayer-test4.exe` there is the build of `main` as of
 the "apply to all" commit; `CPC-Multiplayer.exe` is an older build, and `-test`, `-test2`, `-test3` are older still (a
