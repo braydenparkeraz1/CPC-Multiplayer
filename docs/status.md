@@ -8,7 +8,7 @@ The README has the user-facing description of each feature; `docs/probes-0.5.md`
 | Branch | State |
 |---|---|
 | `main` (pushed) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/`; then protest damage (`fix/protest-damage`) and car carousels following the host (`feature/carousel-sync`, merged 2026-10-29); 0.5.1, the money search in a busy city |
-| `feature/parking-sync` (not merged) | 0.5.2: cars visiting lots and drive-thrus follow the host (`lua/visits.lua`, `src/Session/Session.Visits.cs`), and the parking probes in `tools/probes/` |
+| `feature/parking-sync` (merged into `main` 2026-10-30, not pushed) | 0.5.2: cars visiting lots and drive-thrus follow the host (`lua/visits.lua`, `src/Session/Session.Visits.cs`), and the parking probes in `tools/probes/` |
 
 The game is installed at `C:\Games\Car Park Capital`. `CPC-Multiplayer-test4.exe` there is the build of `main` as of
 the "apply to all" commit; `CPC-Multiplayer.exe` is an older build, and `-test`, `-test2`, `-test3` are older still (a
