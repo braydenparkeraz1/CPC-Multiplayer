@@ -7,7 +7,8 @@ The README has the user-facing description of each feature; `docs/probes-0.5.md`
 
 | Branch | State |
 |---|---|
-| `main` (pushed) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/`; then protest damage (`fix/protest-damage`) and car carousels following the host (`feature/carousel-sync`, merged 2026-10-29) |
+| `main` (pushed) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/`; then protest damage (`fix/protest-damage`) and car carousels following the host (`feature/carousel-sync`, merged 2026-10-29); 0.5.1, the money search in a busy city |
+| `feature/parking-sync` (not merged) | 0.5.2: cars visiting lots and drive-thrus follow the host (`lua/visits.lua`, `src/Session/Session.Visits.cs`), and the parking probes in `tools/probes/` |
 
 The game is installed at `C:\Games\Car Park Capital`. `CPC-Multiplayer-test4.exe` there is the build of `main` as of
 the "apply to all" commit; `CPC-Multiplayer.exe` is an older build, and `-test`, `-test2`, `-test3` are older still (a
@@ -33,6 +34,7 @@ Two copies of the game on one PC (host and friend), city `ix`.
 | Car ownership (0.5.0+) | Works: the friend's helper log showed it following the host's 97 owners, none waiting or missing |
 | Protest damage, the host's only (branch `fix/protest-damage`) | Works (2026-10-26, city copy `mpcheck`): a lamppost destroyed on the friend's game wasn't sent and came back in 7 s; the friend's demolish tool reached the host as `demolish` at once, refund included; the host's own protest damage still reached the friend; no protest banners sent |
 | Car carousels: the host's stock, `numSold` and `moneyMade`, each sale repeated (branch `feature/carousel-sync`) | Works (2026-10-29, city copy `carousel2`): 6 of the host's sales were each repeated in the friend's game 0.15 s later, the same buyer getting the same kind of car; stock (kinds and count), `numSold` (65) and `moneyMade` (20478.38) the same on both; the friend's own buyers refused; no cars left standing. The carousel was stocked by hand (`pushItemToStorage`, as a truck does): city `ix` has no factory or car-carrier garage, and its carousel only got cars once, soon after loading |
+| Cars visiting lots and drive-thrus are the host's (branch `feature/parking-sync`, 0.5.2) | Works for parking (2026-10-30, city copy `parkvisit2` of `carousel2`): the friend's game showed the host's ~59 visiting cars as stand-ins, its lot looked the same car for car, the host's parking payments were repeated there (19 in 3 minutes), the friend's own claims were called off (143) and its 46 cars parked from before hidden, none left visible in a bay. **Drive-thrus not seen yet**: nobody used the one drive-thru while watched |
 
 ## Not shared yet, in the user's order of importance
 
@@ -51,7 +53,8 @@ entering and leaving lots and drive-thrus, car sales, and protests. 1:1 position
    - A friend's buyer who is walking in town gets a car that isn't on the map (as the owners list makes them).
      Residents given such a car kept walking around normally (state 400) for as long as they were watched (75 s);
      what they do when they next want to drive wasn't seen.
-2. **Cars entering and leaving lots and drive-thrus**, the cause of the friend's parking income appearing and vanishing.
+2. **Cars entering and leaving lots and drive-thrus: done for parking** on branch `feature/parking-sync` (README, "Changes
+   in 0.5.2"); drive-thrus are built the same way but untested in the game. Findings and the first design notes, the cause of the friend's parking income appearing and vanishing.
    - Every car is a resident's own (`OwnedVehicle`/`VehicleOwner`, templates Cabriolet, BananaCar, BubbleCabin, ...),
      the same people by name on both sides. About 10-15 drive at once; people out of town have no `Transform`.
    - Parking is a `ParkingEntryTicket` on the person: `entryTime`, `ratePerMinute`, `parkingEntrance`, `bPaid`,
@@ -59,6 +62,20 @@ entering and leaving lots and drive-thrus, car sales, and protests. 1:1 position
      car wasn't tried. Writing `PersonFSM.state` is accepted but doesn't stop the person.
    - Idea: the host streams its owned cars' positions, tickets and drive-thru state; the friend's game places its
      copies there instead of driving them, so they leave lots and pay when the host's do.
+   - Probed 2026-10-30 (city copy `parkprobe` of `carousel2`, one lot, 91 bays; `tools/probes/probe_parking*.lua`,
+     `probe_teleport.lua`, `probe_transact.lua`):
+     - The fee is charged by the engine as the car passes the exit (`ParkingExit` is a `VehicleBarrier` nav link):
+       `(exit time - entryTime) * ratePerMinute`, with `entryTime` in game minutes (`getSimulationTime()`'s unit). The
+       exit's `totalMoneyTransacted` and `numVehiclesPassed` grow by it; no Lua `transactMoney` is involved.
+     - `ticket.bPaid = true` changes nothing: those cars paid in full. **A car whose ticket was removed paid nothing**
+       and wasn't counted by the exit. So a friend's game can stop its own parking income by removing tickets.
+     - A **moving** car can be moved: written back 10 tiles along its route, it kept driving at the same speed, with
+       its driver and path. Bays are keyed placeables (`ParkingBay@x,y,z/r/v`), the same on both PCs.
+     - After 5 minutes of play the games had 58 / 62 parked and exit totals 50,489 / 44,949 (host / friend).
+     - `MP.env` is the mod's own environment, not the room's: a `transactMoney` wrapper must go on
+       `getmetatable(MP.env).__index` (as `boot.lua` finds the room). Drive-thru stalls pay through it
+       (`TransactionCategory.DRIVE_THRU` = 8), but nobody used the one drive-thru while watched, so a wrapper there
+       is untested.
 3. **Protests.** They already start in the same place on both games (shared unrest and buildings) with different
    people. A protester is a `Person` with `Protesting` (`leader`, cooldowns), `ProtestBlockingTarget` (`target`) and
    `PersonFSM.state` 700; the banner is a `ProtestBanner` entity. Only the host's protest damage reaches the city now

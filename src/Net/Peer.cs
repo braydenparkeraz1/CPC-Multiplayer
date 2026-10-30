@@ -102,7 +102,7 @@ internal class Peer
 		{
 			Interlocked.Increment(ref PingsOut);
 		}
-		else if (type != "log")
+		else if (type != "log" && !PlayLog.Chatty(type))
 		{
 			PlayLog.Write("net>", Label + " " + PlayLog.Summarize(msg) + (bytes.Length > 4096 ? " (" + bytes.Length / 1024 + " KB)" : ""));
 		}
@@ -204,7 +204,7 @@ internal class Peer
 	private void LogReceived(Dictionary<string, object> msg, int length)
 	{
 		string type = Util.Str(msg, "t");
-		if (type == "log")
+		if (type == "log" || PlayLog.Chatty(type))
 		{
 			return;
 		}

@@ -416,6 +416,8 @@ function Scenario-LuaSync {
     if ($LASTEXITCODE -ne 0) { throw "Lua settings tests failed" }
     & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\cars_test.lua") | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "Lua cars tests failed" }
+    & (Join-Path $bin "luarun\luarun.exe") (Join-Path $root "tests\lua\visits_test.lua") | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "Lua visits tests failed" }
 }
 
 # ---- 0.4.0 sync: the host decides, instant join, drift repair ----
@@ -945,6 +947,29 @@ function Scenario-CarouselHostToClient {
     if ((GameLog $c2) -match "sale=Ann") { throw "a later joiner got an old sale" }
 }
 
+function Scenario-VisitsHostToClient {
+    # The host's cars on a visit (a lot or drive-thru), its lots' counters and each payment reach the client's game;
+    # a client joining later gets the cars and counters (no old payments). A client's own visits go nowhere.
+    $s = Start-HostAndClient
+    $lot = "ParkingExit@285,8,242/3/0"
+    Game $s.h "visit 501 Cabriolet 10"
+    Expect "client game gets the host's car" { GameLog $s.c } "visits cars=501 " 1 10
+    Game $s.h "visitpay PARKING 129.6"
+    Expect "client game gets the payment" { GameLog $s.c } "pays=PARKING:129\.6" 1 10
+    Game $s.h "visitlot $lot 5 600.5"
+    Expect "client game gets the lot's counters" { GameLog $s.c } "lots=$([regex]::Escape($lot)):5" 1 10
+    Game $s.c "visit 777 BananaCar 3"
+    Start-Sleep -Seconds 2
+    if ((GameLog $s.h) -match "visits cars=") { throw "the client's visit reached the host's game" }
+    $c2 = New-GameDir "client2"
+    Start-Helper $c2 @("join", "127.0.0.1:$($s.port)", "--name", "Second") | Out-Null
+    Expect "a later joiner gets the car and counters at once" { GameLog $c2 } "visits cars=501 gone= pays= lots=$([regex]::Escape($lot)):5 full=1" 1 30
+    if ((GameLog $c2) -match "pays=PARKING") { throw "a later joiner got an old payment" }
+    Game $s.h "visitdone 501"
+    Expect "client game hears the visit is over" { GameLog $s.c } "gone=501" 1 10
+    Expect "so does the later joiner" { GameLog $c2 } "gone=501" 1 10
+}
+
 function Scenario-StatsHostToClient {
     # Each game's own simulation gives other city statistics; the client's HUD shows the host's.
     $s = Start-SpeedPair
@@ -1018,7 +1043,7 @@ $scenarios = @("HelperUnits", "LuaSync",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
     "MoneyFound", "MoneyFoundBusyCity", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
-    "StatsHostToClient", "CarsHostToClient", "CarouselHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
+    "StatsHostToClient", "CarsHostToClient", "CarouselHostToClient", "VisitsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
     "PriceLockedAtHost", "PriceLockedTable", "PriceLockedHidden", "ApplyToAllShared")
 if ($Only) {
     # "-File" passes "A,B" as one string.

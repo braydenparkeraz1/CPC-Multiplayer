@@ -17,13 +17,19 @@
 --   * car carousels (VehicleShop, Pricing, GoodsStorage with 10 car slots) and system.Goods as measured in the
 --     game: popItemFromStorage takes the car in the last full slot and leaves it standing, pushItemToStorage
 --     puts a car in the first empty slot; tryBuy hands the buyer a car from the stock and counts the sale
+--   * cars on a visit: bay claims (ParkingSpaceClaim), tickets (ParkingEntryTicket), drive-thrus
+--     (GoingToDriveThru, InDriveThru), parking exits and entrances with their counters, a car's colours
+--     (ModelSpriteView.reservedColorIndices, from the template's mainColor/secondaryColor), Transform with
+--     position and rotation (read as angles; quat:new():setFromAngleAndAxis and * just add them up per
+--     axis here), and transactMoney (recorded in w.transactions)
 -- Not modelled: paint jobs finish instantly as "ok" if the tile is free.
 local Engine = {}
 Engine.__index = Engine
 
 local COMPONENTS = { "Placeable", "Placed", "Placing", "Persistent", "Demolished", "ParkingEntry", "Pricing",
     "Person", "Vehicle", "VehicleOwner", "OwnedVehicle", "Transform", "Driver", "VehiclePassenger",
-    "VehicleShop", "GoodsStorage", "InStorage" }
+    "VehicleShop", "GoodsStorage", "InStorage", "ParkingSpaceClaim", "ParkingEntryTicket", "GoingToDriveThru",
+    "InDriveThru", "ParkingExit", "ModelSpriteView", "Hoverable", "DropShadowVolume" }
 
 local VEHICLE_ITEM = 2
 local CAROUSEL_SLOTS = 10
@@ -49,6 +55,7 @@ function Engine.new(root)
     w.demolishAfter = 3
     w.names = {}         -- entity -> name
     w.logs = {}
+    w.transactions = {}  -- { amount, category, position, showText }
     w.room = w:makeRoom()
     return w
 end
@@ -119,11 +126,25 @@ function Engine:makeRoom()
     room.createEntity = function() return w:create() end
     room.destroyEntity = function(e) w:destroy(e) end
     room.uvec3 = function(x, y, z) return { x = x, y = y, z = z } end
-    room.applyTemplate = function(e, tpl, args, persistent) w:applyTemplate(e, tpl, persistent) end
+    room.applyTemplate = function(e, tpl, args, persistent) w:applyTemplate(e, tpl, persistent, args) end
     room.setComponents = function(e, list) for _, c in ipairs(list) do w:set(e, c) end end
     room.setComponent = function(e, c) w:set(e, c) end
     for _, name in ipairs(COMPONENTS) do
         room[name] = function(data) return { name = name, data = data or {} } end
+    end
+    room.vec3 = function(x, y, z) return { x = x, y = y, z = z } end
+    room.u8vec4 = function(x, y, z, w) return { x = x, y = y, z = z, w = w } end
+    room.ModelSpriteName = function(model, animation) return { model = model, animation = animation } end
+    local Quat = {}
+    Quat.__index = Quat
+    Quat.__mul = function(a, b) return setmetatable({ x = a.x + b.x, y = a.y + b.y, z = a.z + b.z }, Quat) end
+    function Quat:setFromAngleAndAxis(angle, axis)
+        return setmetatable({ x = angle * axis.x, y = angle * axis.y, z = angle * axis.z }, Quat)
+    end
+    room.quat = { new = function() return setmetatable({ x = 0, y = 0, z = 0 }, Quat) end }
+    room.TransactionCategory = { MISCELLANEOUS = 0, CONSTRUCTION = 2, REFUND = 3, DRIVE_THRU = 8, PARKING = 9, OIL_CONSUMPTION = 14 }
+    room.transactMoney = function(amount, category, position, showText)
+        w.transactions[#w.transactions + 1] = { amount = amount, category = category, position = position, showText = showText }
     end
     room.onEvent = function() end
     room.setOnDestroyCallback = function() end
@@ -179,7 +200,7 @@ end
 
 -- What the game does for applyTemplate on an entity with Placing: the template's create() gives it
 -- its Placeable (through setComponents, which the mod's hook watches), and the placement finishes later.
-function Engine:applyTemplate(e, tpl, persistent)
+function Engine:applyTemplate(e, tpl, persistent, args)
     if tpl == "Missing" then error("no template named Missing") end
     if persistent then
         self.comps.Persistent[e] = { applyTemplateOnLoad = tpl }
@@ -187,7 +208,13 @@ function Engine:applyTemplate(e, tpl, persistent)
     if VEHICLES[tpl] then
         -- Vehicle.lua: the Vehicle component first, then the rest through setComponents.
         self.comps.Vehicle[e] = {}
-        self.room.setComponents(e, {})
+        args = args or {}
+        self.room.setComponents(e, {
+            self.room.ModelSpriteView { name = { model = tpl, animation = "NoDoor" },
+                reservedColorIndices = { x = args.mainColor or 7, y = args.secondaryColor or 7, z = 0, w = 88 } },
+            self.room.DropShadowVolume { type = 1 },
+            self.room.Hoverable {},
+        })
         return
     end
     self.room.setComponents(e, { self.room.Placeable { templateIndex = self:templateOf(tpl) } })
@@ -227,6 +254,24 @@ function Engine:spawnPerson(name, carTemplate)
         self.names[v] = name .. "'s vehicle"
     end
     return p
+end
+
+-- A person in town driving their car (of the given template), at x, z.
+function Engine:spawnDriver(name, carTemplate, x, z)
+    local p = self:spawnPerson(name, carTemplate)
+    local v = self.comps.VehicleOwner[p].vehicle
+    self.comps.Transform[p] = { position = { x = x, y = 4, z = z }, rotation = { x = 0, y = 0, z = 0 } }
+    self.comps.Transform[v] = { position = { x = x, y = 4, z = z }, rotation = { x = 0, y = 90, z = 0 } }
+    self.comps.Driver[p] = { vehicle = v }
+    return p, v
+end
+
+-- A parking exit (a keyed placeable) with its counters.
+function Engine:spawnExit(x, y, z)
+    local e = self:spawnPlaced("ParkingExit", x, y, z, 3, 0)
+    self.comps.ParkingExit[e] = { numVehiclesPassed = 0, totalMoneyTransacted = 0 }
+    self.comps.Transform[e] = { position = { x = x, y = y, z = z } }
+    return e
 end
 
 -- The person's car (entity) and its template, or nil.
@@ -378,6 +423,7 @@ function Engine:bootMod(withSettings, role)
     load("sync", MP)
     if withSettings then load("settings", MP) end
     load("cars", MP)
+    load("visits", MP)
     self.MP = MP
     return MP
 end
@@ -386,7 +432,7 @@ end
 function Engine:step(n)
     for _ = 1, n or 1 do
         self:update()
-        if self.MP.onFrame then self.MP.onFrame() end
+        if self.MP.onFrame then self.MP.onFrame(0.1) end
         self.MP.onTick()
     end
 end

@@ -43,7 +43,8 @@ What is shared:
 | City statistics: carbrainness, civil unrest, need fulfilment, car dependency progress | The host's, on every HUD (0.5.0) |
 | Who owns which car (and so the car dependency level) | The host's: friends' games give and take real cars to match (0.5.0) |
 | Car carousels: stock, cars sold, money made, each sale | The host's: a sale happens in every game at once, to the same buyer (0.5.0) |
-| Cars, people and protests themselves | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
+| Cars visiting a parking lot or drive-thru: going in, parked, leaving, paying | The host's: a friend's game shows the host's cars there and its own don't visit (0.5.2) |
+| Other cars, people and protests | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
 
 ## Build
 
@@ -169,6 +170,28 @@ in the lobby ends the helper. `host` and `join` on the command line work as befo
 The helper remembers your name and the last 5 host addresses that connected in `multiplayer/settings.json` in the game
 folder. On first run the name defaults to your Steam profile name (from Steam's `config/loginusers.vdf`), then your
 Windows user name.
+
+## Changes in 0.5.2
+
+- **Parking lots and drive-thrus show the host's cars.** Every PC simulated its own drivers, so a friend saw its own
+  cars park, leave and pay at the exit, and the money vanish again (the host's wallet is the one that counts); after 5
+  minutes the two games had 58 and 62 cars parked. Now a car on a visit in the host's game, from the moment it heads for
+  a bay or a drive-thru, parked, leaving, and 3 s past the exit, is shown in a friend's game at the same place
+  (`lua/visits.lua`, `src/Session/Session.Visits.cs`). Cars just driving around stay each PC's own.
+  - The host's mod reports its visiting cars 5 times a second while they move (the kind of car, its colours, position
+    and angles) and all of them every 5 s; its lots' counters; and each payment: parking (an exit's
+    `totalMoneyTransacted` grew: the engine charges a car as it passes the exit, Lua doesn't see it), drive-thrus and
+    gas pumps (their scripts call `transactMoney`, wrapped in the room's environment).
+  - A friend's game shows each one as a stand-in: the same kind of car and colours, nobody's and with nobody driving
+    it, not saved, moved smoothly between reports. Its own cars don't visit: every tick their bay claim, ticket and
+    drive-thru visit are called off. A car without a ticket leaves a lot free (a ticket marked paid still pays), and a
+    driver whose claim goes away drives on. Its own cars parked from before are hidden (sprite and shadow taken off,
+    the game's sprites don't scale) until they've been driven away from the lot. Its own drive-thru and gas income is
+    dropped.
+  - The host's lot counters are written onto the friend's lots, and each of the host's payments is repeated in the
+    friend's game, so the money shows where it was paid; the helper writes the host's balance back straight after.
+  - Payments, arrivals and departures go in the playtest log (`[visits]`); reports that only move cars don't.
+  - The protocol changed (`visits`), so every player needs 0.5.2.
 
 ## Changes in 0.5.1
 
@@ -304,8 +327,8 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
 Each PC still runs its own simulation of cars, people and protests. A joiner starts with the host's (they're in the
 save), but they drift apart from then on. The statistics on the HUD are the host's (above), but the simulation
 underneath isn't:
-- A friend's own cars leave parking lots and pay at other times than the host's, so the friend sees income that the
-  host's wallet (the one that counts) doesn't have, and the balance jumps back.
+- Cars just driving around, and people walking, are each PC's own (cars on a visit to a lot or drive-thru are the
+  host's, above).
 - What citizens will pay at a booth follows each PC's own simulation, but not the money: the wallet is the host's.
 - Protests start on each PC from the shared civil unrest and buildings, often in the same place, but with other people.
   Only the damage done in the host's game is shared (above).
@@ -418,6 +441,7 @@ Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 | `src/Session/Session.Speed.cs` | Pause and game speed, and keeping the clocks together |
 | `src/Session/Session.ApplyToAll.cs`, `src/Sync/ApplyToAllSync.cs` | "Apply to all": the boxes and stored prices, in the game's memory, last change wins |
 | `src/Session/Session.Cars.cs` | Who owns which car: the host's mod's list to every friend's mod |
+| `src/Session/Session.Visits.cs` | Cars on a visit to a lot or drive-thru, lot counters and payments: the host's mod's reports to every friend's mod |
 | `src/Session/Session.Stats.cs`, `src/Sync/StatsSync.cs` | City statistics: the host's newest snapshot over each friend's own |
 | `src/Session/Session.Commands.cs` | Console and control-file commands, the `--dev` console |
 | `src/Session/Session.Menu.cs`, `src/Invite.cs`, `src/Clipboard.cs`, `src/ConsoleWindow.cs` | The main menu's buttons: what they show and do; the host's invite and the addresses in copied text; the clipboard; hiding the console window |
@@ -446,6 +470,7 @@ Both are next. `docs/probes-0.5.md` lists the in-game checks they need first.
 | `lua/sync.lua` | Detects local place/demolish; replays remote ones; keeps the digest of shared objects and repairs buckets; runs the repaint queue; reports the map size |
 | `lua/settings.lua` | Finds price changes by polling the objects that have one, applies the host's prices, tells the game's "apply to all" undoing a price from the player's edits |
 | `lua/cars.lua` | Host: reports who owns which kind of car. Friend: gives and takes cars to match the host's list |
+| `lua/visits.lua` | Host: reports cars on a visit to a lot or drive-thru, lot counters and payments. Friend: shows them as stand-ins, calls off its own visits, repeats the payments |
 | `lua/money.lua` | Marker transactions for finding the money; applies friends' spends on the host |
 | `lua/menu.lua` | The main menu's Host/Join buttons and status lines, as 3D letters in the menu's scene; a row too wide for the screen is drawn smaller |
 | `lua/MPLoad.lua` | UI-screen script used to switch level (load the host's city) or close the game |
@@ -491,6 +516,7 @@ Anything else on the port is ignored.
 | `applytoall` | both | The "apply to all" boxes (`ticks`, bit i = pricing id i+1) and stored `prices`. From a client with `seq`; from the host with `ack` and `by` (who changed it). The host repeats it every 5 s and after `sync?` (0.5.0) |
 | `stats` | host → client | The host's newest city statistics snapshot: its game `time` and `data`, the 144 shared bytes in base64. When it changes (at most every 0.5 s), at least every 5 s (0.5.0) |
 | `shop` | host → client | A car carousel in the host's city: its `key`, stock, cars sold and money made, with `sale` (the buyer and the kind of car) when it just sold one. When it changes, and the latest of each carousel to a friend who joins (0.5.0) |
+| `visits` | host → client | The host's cars on a visit to a lot or drive-thru: `cars` (`id`, `tpl`, colours `c1`/`c2`, `x`/`y`/`z`, angles `rx`/`ry`/`rz`) that are new or moved, `gone` (ids), `lots` (object key → `n` cars through, `m` money made) that changed, `pays` (`cat` PARKING, DRIVE_THRU or OIL_CONSUMPTION, `amount`, `x`/`y`/`z`); with `full` every 5 s and to a friend who joins, which lists every car. Up to 5 a second (0.5.2) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
 `demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, `menu`, and `trace`, which only goes in the playtest log), and the
@@ -507,4 +533,7 @@ In 0.5.0: `hb` carries `sim` (the game's clock); `place` may carry `paint` (the 
 directions; `blocked` carries `reason` (the game's `Placing.blockedReasonStr`); the mod reports `settingrevert` (`key`,
 `field`, `value` the game put back, `wanted`, `kind` of price) and answers inbox `typevalue?` (`req`, `kind`, `field`) with
 `typevalue` (`count`, `min`, `max`); inbox `pricingids` (`names`) tells it the price kinds in the game's scripts.
+In 0.5.2: the mod reports `visits` (host, as above) and `visitsync` (friend: how many of the host's cars it `shown`, own
+parked cars `hidden`, own visits `cancelled`, host's payments `replayed`, own drive-thru payments `blocked`); inbox
+`visits` (friend) carries the host's, merged per car.
 
