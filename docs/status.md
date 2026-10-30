@@ -22,7 +22,7 @@ Two copies of the game on one PC (host and friend), city `ix`.
 |---|---|
 | Host / Join buttons on the main menu, LAN "Join <name>" button | Works |
 | Builds, demolitions, roads, floors, land ownership (0.4.0) | Works (land overlay and eviction: see below) |
-| Money follows the host | Works |
+| Money follows the host | Works, once the helper finds the money. In the busy city copy `carousel2` (2026-10-29) the host's search failed five times: income hid its nudge of 2. 0.5.1 nudges by 500 (test `MoneyFoundBusyCity`); not yet checked in the real game |
 | Game speed | Works |
 | Pause (0.5.0+) | Works. Space sets a flag (`Level + 0x8`), not the speed |
 | Day and time of day | Works (clock nudging) |

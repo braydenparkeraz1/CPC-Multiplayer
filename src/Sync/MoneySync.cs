@@ -14,9 +14,11 @@ namespace CpcMultiplayer;
 //  1. Scan writable memory for doubles near the balance in the save the city came from.
 //  2. The mod adds a marker amount and takes it back a moment later (lua/money.lua); keep the values
 //     that moved by exactly that. That leaves the balance plus copies of it (the HUD's, a statistic).
-//  3. Nudge each survivor a little: the balance is the one that keeps the nudge while a copy follows
-//     it. Each nudge is undone straight away. The HUD's copy is refreshed a frame after a change, so
-//     it may have missed the markers; copies are looked for among everything the scan found.
+//  3. Nudge each survivor: the balance is the one that keeps the nudge while a copy follows it. Each
+//     nudge is undone straight away. The HUD's copy is refreshed a frame after a change, so it may
+//     have missed the markers; copies are looked for among everything the scan found. The nudge is as
+//     big as the marker: a busy city's income moves the money by a few every half second, which hid
+//     a nudge of 2 (the balance seemed to snap back, and copies seemed to follow other survivors).
 internal class MoneySync : IDisposable
 {
 	public const double Marker = 500.0;
@@ -24,9 +26,11 @@ internal class MoneySync : IDisposable
 	// How far other income and upkeep may move the money while a marker step runs (~0.2 s).
 	private const double MarkerTolerance = 50.0;
 
-	private const double Nudge = 2.0;
+	private const double Nudge = Marker;
 
-	private const double NudgeTolerance = 1.0;
+	// How far income and upkeep may move the money while a nudge waits (NudgeWait). Below a car sale
+	// (~300), so a sale can't pass for a kept nudge or a copy following one.
+	private const double NudgeTolerance = 150.0;
 
 	// Long enough for a copy to catch up even when the game runs slowly.
 	private static readonly TimeSpan NudgeWait = TimeSpan.FromMilliseconds(500.0);

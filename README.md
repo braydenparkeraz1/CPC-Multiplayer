@@ -170,6 +170,16 @@ The helper remembers your name and the last 5 host addresses that connected in `
 folder. On first run the name defaults to your Steam profile name (from Steam's `config/loginusers.vdf`), then your
 Windows user name.
 
+## Changes in 0.5.1
+
+Builds made before city statistics, car ownership, car carousels and protest damage were added also said 0.5.0, so an
+old and a new helper let each other in and then drifted apart. Every player needs 0.5.1.
+
+- **Money is found in a busy city.** The helper tells the game's balance from its copies by nudging each candidate
+  and seeing which one keeps the nudge. The nudge was 2, and a city earning a few every half second hid it: the host's
+  search failed five times in a row and money wasn't shared. The nudge is now as big as the marker (500), with room
+  for 150 of income or upkeep while it waits (`src/Sync/MoneySync.cs`).
+
 ## Changes in 0.5.0
 
 Fixes from the first playtest. The protocol changed, so every player needs 0.5.0.
@@ -480,6 +490,7 @@ Anything else on the port is ignored.
 | `cars` | host → client | Who owns which car in the host's city: `owners`, name → car template. When it changes, and after `sync?` (0.5.0) |
 | `applytoall` | both | The "apply to all" boxes (`ticks`, bit i = pricing id i+1) and stored `prices`. From a client with `seq`; from the host with `ack` and `by` (who changed it). The host repeats it every 5 s and after `sync?` (0.5.0) |
 | `stats` | host → client | The host's newest city statistics snapshot: its game `time` and `data`, the 144 shared bytes in base64. When it changes (at most every 0.5 s), at least every 5 s (0.5.0) |
+| `shop` | host → client | A car carousel in the host's city: its `key`, stock, cars sold and money made, with `sale` (the buyer and the kind of car) when it just sold one. When it changes, and the latest of each carousel to a friend who joins (0.5.0) |
 
 Between the helper and the mod: the mod prints `MP>{"t":...,"d":{...}}` lines (`room`, `ready`, `hb`, `ack`, `place`,
 `demolish`, `remove`, `placed`, `blocked`, `digest`, `keys`, `reconciled`, `painted`, `error`, `eval`, `hello`, `menu`, and `trace`, which only goes in the playtest log), and the
