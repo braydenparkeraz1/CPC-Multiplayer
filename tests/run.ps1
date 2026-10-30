@@ -809,6 +809,13 @@ function Expect-BothMoney($s, [string]$value) {
     Expect-Money "client game has $value" $s.c $value
 }
 
+function Scenario-MoneyFoundBusyCity {
+    # The host's city earns all the time (5 a second), so the money moves while each nudge waits.
+    $s = Start-HostAndClient @{ FAKEGAME_INCOME = "0.5" }
+    Expect "host finds its game's money while it earns" { HelperLog $s.h } "Shared money: on" 1 40
+    Expect "client finds its game's money" { HelperLog $s.c } "Shared money: on" 1 40
+}
+
 function Scenario-MoneyFound {
     # The markers (+500, then -500) leave the money as it was, and the client shows the host's.
     $s = Start-MoneyPair
@@ -1009,7 +1016,7 @@ $scenarios = @("HelperUnits", "LuaSync",
     "ClientBuildAccepted", "PlaytestLog", "NoShareLog", "ClientBuildRejected", "ThreePlayers", "InstantJoinLobbyCity", "DriftRepair", "VersionRefused", "OldHostRefused",
     "PriceHostToClient", "PriceClientToHost", "PriceOnJoin", "PriceCoalesce",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
-    "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
+    "MoneyFound", "MoneyFoundBusyCity", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
     "StatsHostToClient", "CarsHostToClient", "CarouselHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
     "PriceLockedAtHost", "PriceLockedTable", "PriceLockedHidden", "ApplyToAllShared")

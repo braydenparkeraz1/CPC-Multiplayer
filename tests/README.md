@@ -142,6 +142,7 @@ Each folder gets a `TestFlag` template costing 50.
 | Scenario (`run.ps1`) | Expected |
 |---|---|
 | MoneyFound | Both helpers find their game's money; the markers leave it as it was |
+| MoneyFoundBusyCity | The host's game earns 5 a second (`FAKEGAME_INCOME`), so the money moves while each nudge waits: both helpers still find it (0.5.1) |
 | MoneyHostToClient | The host's money changes, and the client's game follows |
 | MoneyClientIncomeIgnored | The client's own game earns something; it goes back to the host's balance |
 | MoneyClientBuilds | A client build is charged to the host's game once, and both end the same |

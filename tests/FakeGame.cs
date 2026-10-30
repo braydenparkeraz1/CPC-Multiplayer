@@ -50,6 +50,7 @@
 // fakegame.log records what arrived, e.g. "hello role=lobby", "loading <path> (exists)", "place Bench@1,1,1/0/0",
 // "applied ParkingEntrance@1,8,1/0/0 ParkingEntry.ratePerMinute=0.37", "stale ParkingEntrance@1,8,1/0/0=0.2",
 // "menu [host,join] <line> | <line>" (what the main menu shows).
+// FAKEGAME_INCOME=<amount> earns that much every tick (0.1 s) while a city runs, like a busy city's parking.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -63,7 +64,7 @@ using System.Threading;
 
 internal static class FakeGame
 {
-	private const string Version = "0.5.0";
+	private const string Version = "0.5.1";
 
 	private const int Buckets = 64;
 
@@ -942,6 +943,7 @@ internal static class FakeGame
 		}
 		bool ignoreLeave = Environment.GetEnvironmentVariable("FAKEGAME_IGNORE_LEAVE") == "1";
 		string blockKey = Environment.GetEnvironmentVariable("FAKEGAME_BLOCK");
+		double.TryParse(Environment.GetEnvironmentVariable("FAKEGAME_INCOME"), NumberStyles.Float, CultureInfo.InvariantCulture, out var income);
 		string inboxPath = Path.Combine("multiplayer", "runtime", "inbox_" + session + ".lua");
 		SetMoney(StartMoney);
 		SetUpSpeed();
@@ -1000,6 +1002,10 @@ internal static class FakeGame
 			if (context == "level" && tick % 10 == 0)
 			{
 				Emit("hb", "{\"tick\":" + tick + ",\"paused\":" + (paused ? "true" : "false") + ",\"sim\":" + Num(sim) + "}");
+			}
+			if (context == "level" && !paused && income != 0.0)
+			{
+				Transact(income);
 			}
 			// The HUD redraws even while paused.
 			Set(displayMem, Get(balanceMem));
