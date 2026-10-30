@@ -279,6 +279,9 @@ internal partial class Session
 		case "shop":
 			OnHostShop(m);
 			break;
+		case "visits":
+			OnHostVisits(m);
+			break;
 		case "applytoall":
 			OnHostApplyToAll(m);
 			break;

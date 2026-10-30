@@ -268,6 +268,14 @@ internal partial class Session
 		CarsTick();
 		try
 		{
+			VisitsTick();
+		}
+		catch (Exception ex)
+		{
+			Ui.Log("visits sync error: " + ex);
+		}
+		try
+		{
 			ApplyToAllTick();
 		}
 		catch (Exception ex)
@@ -361,6 +369,7 @@ internal partial class Session
 		ResetSpeed();
 		ResetStats();
 		ResetCars();
+		ResetVisits();
 		ResetApplyToAll();
 		ResetDrift();
 	}

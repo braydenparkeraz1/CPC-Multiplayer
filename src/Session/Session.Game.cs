@@ -149,6 +149,12 @@ internal partial class Session
 		case "shopsync":
 			OnModShopSync(d);
 			break;
+		case "visits":
+			OnModVisits(d);
+			break;
+		case "visitsync":
+			OnModVisitSync(d);
+			break;
 		case "eval":
 			Ui.Info("lua> " + Util.Str(d, "out"));
 			if (opts.Dev)
@@ -169,6 +175,9 @@ internal partial class Session
 			modHeartbeats++;
 			break;
 		case "ack":
+			break;
+		case "visits":
+			// Several a second; LogVisits writes the ones with news.
 			break;
 		case "digest":
 		{
@@ -225,6 +234,7 @@ internal partial class Session
 		ResetSpeed();
 		ResetStats();
 		ResetCars();
+		ResetVisits();
 		ResetApplyToAll();
 		ResetPriceMap();
 		if (IsHost && wasInCity)

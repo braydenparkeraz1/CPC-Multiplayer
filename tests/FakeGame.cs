@@ -28,6 +28,11 @@
 //                         sale=<buyer>:<kind>" (sale=- without one)
 //   carbrain <value>      our own simulation's carbrainness, in the city statistics from the next snapshot on
 //                         (every 4 game seconds); the newest snapshot's is logged as "stats carbrain=<value>"
+//   visit <id> <tpl> <x>  a car of ours (entity id) on a visit to a lot or drive-thru is at x, reported like the
+//                         host's mod does ("visits"); visitdone <id>: its visit is over; visitpay <cat> <amount>: a
+//                         visit paid (PARKING, DRIVE_THRU, ...); visitlot <key> <n> <m>: a lot's counters. An inbox
+//                         "visits" is logged as "visits cars=<ids> gone=<ids> pays=<cat:amount,...> lots=<key:n,...>
+//                         full=<0|1>"
 //   lock <value>          the player ticked "apply to all" for parking prices at that value: from then on
 //                         every tick copies the stored price onto every entrance, like the game. The stored
 //                         price sits in native memory as the game's map node would hold it ("parking" as a
@@ -64,7 +69,7 @@ using System.Threading;
 
 internal static class FakeGame
 {
-	private const string Version = "0.5.1";
+	private const string Version = "0.5.2";
 
 	private const int Buckets = 64;
 
@@ -698,6 +703,29 @@ internal static class FakeGame
 			Emit("shop", "{\"key\":" + Json(words[0]) + ",\"stock\":[" + kinds + "],\"sold\":" + words[2] + ",\"made\":" + words[2] + "00.5" + sale + "}");
 			break;
 		}
+		case "visit":
+		{
+			string[] words = arg.Split(' ');
+			Emit("visits", "{\"cars\":[{\"id\":" + words[0] + ",\"tpl\":" + Json(words[1]) + ",\"c1\":112,\"c2\":113,\"x\":" + words[2] +
+				",\"y\":4,\"z\":0,\"rx\":0,\"ry\":90,\"rz\":0}],\"gone\":{},\"lots\":{},\"pays\":{}}");
+			break;
+		}
+		case "visitdone":
+			Emit("visits", "{\"cars\":{},\"gone\":[" + arg + "],\"lots\":{},\"pays\":{}}");
+			break;
+		case "visitpay":
+		{
+			string[] words = arg.Split(' ');
+			Emit("visits", "{\"cars\":{},\"gone\":{},\"lots\":{},\"pays\":[{\"cat\":" + Json(words[0]) + ",\"amount\":" + words[1] +
+				",\"x\":5,\"y\":8,\"z\":6}]}");
+			break;
+		}
+		case "visitlot":
+		{
+			string[] words = arg.Split(' ');
+			Emit("visits", "{\"cars\":{},\"gone\":{},\"pays\":{},\"lots\":{" + Json(words[0]) + ":{\"n\":" + words[1] + ",\"m\":" + words[2] + "}}}");
+			break;
+		}
 		case "lock":
 			Lock(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
@@ -860,6 +888,21 @@ internal static class FakeGame
 			string buyer = Field(rest, "buyer");
 			Log("shop " + key + " stock=" + string.Join(",", kinds.ToArray()) + " sold=" + Field(rest, "sold") +
 				" sale=" + (buyer.Length > 0 ? buyer + ":" + Field(rest, "tpl") : "-"));
+			break;
+		}
+		case "visits":
+		{
+			// {["cars"]={{["id"]=501,["tpl"]="Cabriolet",...},},["gone"]={7,},["lots"]={["ParkingExit@..."]={["n"]=5,["m"]=600.5,},},
+			//  ["pays"]={{["cat"]="PARKING",["amount"]=129.6,...},},["full"]=true,}
+			IEnumerable<string> cars = Regex.Matches(rest, @"\[""id""\]=(\d+)").Cast<Match>().Select(m => m.Groups[1].Value);
+			Match goneList = Regex.Match(rest, @"\[""gone""\]=\{([^}]*)\}");
+			IEnumerable<string> gone = Regex.Matches(goneList.Groups[1].Value, @"\d+").Cast<Match>().Select(m => m.Value);
+			IEnumerable<string> pays = Regex.Matches(rest, @"\[""cat""\]=""([A-Z_]+)"",\[""amount""\]=([-0-9.eE+]+)").Cast<Match>()
+				.Select(m => m.Groups[1].Value + ":" + m.Groups[2].Value);
+			IEnumerable<string> lots = Regex.Matches(rest, @"\[""(Parking[^""]+)""\]=\{\[""n""\]=(\d+)").Cast<Match>()
+				.Select(m => m.Groups[1].Value + ":" + m.Groups[2].Value);
+			Log("visits cars=" + string.Join(",", cars.ToArray()) + " gone=" + string.Join(",", gone.ToArray()) + " pays=" + string.Join(",", pays.ToArray()) +
+				" lots=" + string.Join(",", lots.ToArray()) + " full=" + (rest.Contains("[\"full\"]=true") ? "1" : "0"));
 			break;
 		}
 		case "menu":

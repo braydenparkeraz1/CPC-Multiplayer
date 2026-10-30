@@ -19,7 +19,7 @@ _G.MP = MP
 
 MP.ROOT = "multiplayer/"
 MP.POLL_INTERVAL = 0.1
-MP.VERSION = "0.5.1"
+MP.VERSION = "0.5.2"
 
 function MP.log(...)
     local parts = {}
@@ -88,12 +88,13 @@ if context == "level" then
         loadModule("hooks", roomEnv, "boot")
     end
     MP.room = MP_ROOMS and MP_ROOMS[roomEnv]
-    MP.onIndexed, MP.onUnindexed, MP.settingsTick, MP.moneyTick, MP.carsTick = nil, nil, nil, nil, nil
+    MP.onIndexed, MP.onUnindexed, MP.settingsTick, MP.moneyTick, MP.carsTick, MP.visitsTick = nil, nil, nil, nil, nil, nil
     if MP.room then
         loadModule("sync", MP)
         loadModule("settings", MP)
         loadModule("money", MP)
         loadModule("cars", MP)
+        loadModule("visits", MP)
     else
         MP.log("placeable hook missing, object sync disabled")
     end
@@ -128,15 +129,15 @@ local function tick()
     step(false)
 end
 
-local function frame()
+local function frame(deltaTime)
     if MP.generation ~= generation then
         pcall(setUpdateFunction, hostEntity, 0.0, nil)
         return
     end
-    -- Work that can't wait for a tick (sync.lua: demolitions that last one frame). It runs every frame,
-    -- so an error stops it instead of filling the log.
+    -- Work that can't wait for a tick (sync.lua: demolitions that last one frame; visits.lua: moving
+    -- the host's cars). It runs every frame, so an error stops it instead of filling the log.
     if MP.onFrame then
-        local ok, err = pcall(MP.onFrame)
+        local ok, err = pcall(MP.onFrame, deltaTime)
         if not ok then
             MP.onFrame = nil
             MP.log("frame error, stopped: " .. tostring(err))

@@ -64,7 +64,10 @@ internal class Inbox
 		addedAt[id] = DateTime.UtcNow;
 		pending.Add(msg);
 		dirty = true;
-		PlayLog.Write("inbox", PlayLog.Summarize(msg));
+		if (!PlayLog.Chatty(type))
+		{
+			PlayLog.Write("inbox", PlayLog.Summarize(msg));
+		}
 		return id;
 	}
 

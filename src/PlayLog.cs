@@ -157,6 +157,13 @@ internal static class PlayLog
 		}
 	}
 
+	// Messages sent several times a second (cars on a visit while they move): left out of the log line by
+	// line; their handlers log what matters.
+	public static bool Chatty(string type)
+	{
+		return type == "visits";
+	}
+
 	// Safe from any thread.
 	public static void Write(string category, string text)
 	{

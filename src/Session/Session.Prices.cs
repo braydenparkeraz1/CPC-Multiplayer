@@ -284,6 +284,7 @@ internal partial class Session
 		SendSpeed(p, null);
 		SendApplyToAll(p, null);
 		SendCars(p);
+		SendVisits(p);
 	}
 
 	// Client: the host's prices; the game applies only the ones that differ from its own.

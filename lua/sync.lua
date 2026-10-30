@@ -476,6 +476,10 @@ function MP.onTick()
         local ok, err = pcall(MP.carsTick)
         if not ok then MP.log("cars error: " .. tostring(err)) end
     end
+    if MP.visitsTick then
+        local ok, err = pcall(MP.visitsTick)
+        if not ok then MP.log("visits error: " .. tostring(err)) end
+    end
     if not S.readyAnnounced and S.tick >= S.readyTick then
         S.readyAnnounced = true
         local count = 0
