@@ -11,7 +11,9 @@
   entity/component world: reporting builds, replaying friends' builds, retries, undo, digests and repairs, and two
   "PCs" racing for one tile. `lua/cars_test.lua` covers `lua/cars.lua`: the host reporting who owns which car, and a
   friend's game giving the host's owners the same kind of car and taking back cars only it has, only from people out of
-  town, a few at a time. Run them alone with `.testrun\bin\luarun\luarun.exe tests\lua\sync_test.lua`.
+  town, a few at a time; and car carousels: the host reporting stock and each sale at once, a friend's carousel taking
+  the host's stock and counts (and losing cars its own trucks bring), each sale repeated for the same buyer without a
+  second car or the old owners list taking it back, and nothing sold by the friend's game itself. Run them alone with `.testrun\bin\luarun\luarun.exe tests\lua\sync_test.lua`.
   `lua/menu_test.lua` (scenario `LuaMenu`) does the same for `lua/menu.lua`, the main menu's buttons, with its own small
   stand-in for the engine: letters and shadows, clicks and hovering by cursor position, a menu sent before the camera exists,
   and a row of four buttons too wide for a 720p screen drawn smaller, on the same baseline, with its buttons still clickable.
@@ -178,6 +180,7 @@ price isn't in memory where the helper can find it. Inbox `typevalue?` is answer
 | MoneyHostIncomeFast | The host's money rises; the client shows it within 2 s (it was up to 3.5 s) |
 | StatsHostToClient | Host and client games compute other carbrainness (`carbrain 0.8` / `0.3`). The client helper finds the stats snapshots in its game's memory and writes the host's over its newest one, again for each new one its game adds; a new host value follows. The host never takes the client's. The stand-in keeps a Stats system at room+0x598 with a growing (and moving) vector of 0xe0-byte snapshots, like the game |
 | CarsHostToClient | The host's game reports its car owners (`buycar`, `sellcar`); the client's game gets the list (inbox `cars`) after each change. A purchase in the client's game doesn't reach the host. A client joining later gets the list once its city has loaded |
+| CarouselHostToClient | The host's game reports its car carousel (`carousel`): the client's game gets its stock (inbox `shop`), then two sales, each one, in order. A sale in the client's game doesn't reach the host. A client joining later gets the latest stock and no old sales |
 | SpeedHostToClient | The host sets 3x, then pauses; the client's game follows, and the client is told who paused |
 | SpeedClientToHost | The client pauses, then sets 2x; the host's game follows, and the client's own changes aren't undone |
 | SpeedBothChange | Both change it at once; both end at the change that reached the host last |

@@ -22,6 +22,10 @@
 //   buycar <name> <kind>  someone in our city now owns a car of that kind; sellcar <name>: no longer. Like the host's
 //                         mod, the owners are then reported ("cars"); an inbox "cars" (a friend's game told the host's
 //                         owners) is logged as "cars <count>: <name>=<kind>,..."
+//   carousel <key> <kinds> <sold> [<buyer> <kind>]   a car carousel now holds these kinds of car (comma-separated,
+//                         or "-" for none) and has sold this many, after a sale to <buyer> if given; reported like the
+//                         host's mod does ("shop"). An inbox "shop" is logged as "shop <key> stock=<kinds> sold=<n>
+//                         sale=<buyer>:<kind>" (sale=- without one)
 //   carbrain <value>      our own simulation's carbrainness, in the city statistics from the next snapshot on
 //                         (every 4 game seconds); the newest snapshot's is logged as "stats carbrain=<value>"
 //   lock <value>          the player ticked "apply to all" for parking prices at that value: from then on
@@ -685,6 +689,14 @@ internal static class FakeGame
 			Emit("cars", "{\"owners\":{" + string.Join(",", carOwners.Select(kv => Json(kv.Key) + ":" + Json(kv.Value)).ToArray()) + "}}");
 			break;
 		}
+		case "carousel":
+		{
+			string[] words = arg.Split(' ');
+			string kinds = words[1] == "-" ? "" : string.Join(",", words[1].Split(',').Select(Json).ToArray());
+			string sale = words.Length >= 4 ? ",\"sale\":{\"buyer\":" + Json(words[3]) + ",\"tpl\":" + Json(words[4]) + "}" : "";
+			Emit("shop", "{\"key\":" + Json(words[0]) + ",\"stock\":[" + kinds + "],\"sold\":" + words[2] + ",\"made\":" + words[2] + "00.5" + sale + "}");
+			break;
+		}
 		case "lock":
 			Lock(double.Parse(arg, CultureInfo.InvariantCulture));
 			break;
@@ -837,6 +849,16 @@ internal static class FakeGame
 			IEnumerable<string> pairs = Regex.Matches(rest, @"\[""([^""]*)""\]=""([^""]*)""").Cast<Match>()
 				.Where(m => m.Groups[1].Value != "type").Select(m => m.Groups[1].Value + "=" + m.Groups[2].Value).OrderBy(x => x, StringComparer.Ordinal);
 			Log("cars " + pairs.Count() + ": " + string.Join(",", pairs.ToArray()));
+			break;
+		}
+		case "shop":
+		{
+			// {["key"]="...",["stock"]={"BananaCar",...,},["sold"]=3,["sale"]={["buyer"]="Ann",["tpl"]="BananaCar",},}
+			Match stock = Regex.Match(rest, @"\[""stock""\]=\{((?:""[^""]*"",)*)\}");
+			IEnumerable<string> kinds = Regex.Matches(stock.Groups[1].Value, @"""([^""]*)""").Cast<Match>().Select(k => k.Groups[1].Value);
+			string buyer = Field(rest, "buyer");
+			Log("shop " + key + " stock=" + string.Join(",", kinds.ToArray()) + " sold=" + Field(rest, "sold") +
+				" sale=" + (buyer.Length > 0 ? buyer + ":" + Field(rest, "tpl") : "-"));
 			break;
 		}
 		case "menu":

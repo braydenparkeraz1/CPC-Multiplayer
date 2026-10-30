@@ -143,6 +143,12 @@ internal partial class Session
 		case "carsync":
 			OnModCarSync(d);
 			break;
+		case "shop":
+			OnModShop(d);
+			break;
+		case "shopsync":
+			OnModShopSync(d);
+			break;
 		case "eval":
 			Ui.Info("lua> " + Util.Str(d, "out"));
 			if (opts.Dev)

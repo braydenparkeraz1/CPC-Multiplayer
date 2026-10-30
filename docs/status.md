@@ -1,6 +1,6 @@
 # Status and next steps
 
-Where multiplayer stands, what was checked in the real game, and what's next. Last updated 2026-10-20.
+Where multiplayer stands, what was checked in the real game, and what's next. Last updated 2026-10-29.
 The README has the user-facing description of each feature; `docs/probes-0.5.md` the in-game checklist.
 
 ## Where the code is
@@ -8,6 +8,7 @@ The README has the user-facing description of each feature; `docs/probes-0.5.md`
 | Branch | State |
 |---|---|
 | `main` (pushed, `bbe06a1`) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/` |
+| `feature/carousel-sync` (worktree `C:\Claude\CPC-MP-carousel`, not merged) | Car carousels: the host's stock, sold counts and each sale in every game |
 
 The game is installed at `C:\Games\Car Park Capital`. `CPC-Multiplayer-test4.exe` there is the build of `main` as of
 the "apply to all" commit; `CPC-Multiplayer.exe` is an older build, and `-test`, `-test2`, `-test3` are older still (a
@@ -32,24 +33,25 @@ Two copies of the game on one PC (host and friend), city `ix`.
 | City statistics on the HUD: carbrainness, civil unrest, need fulfilment, car dependency progress (0.5.0+) | Works: the friend's newest stats snapshot is overwritten with the host's |
 | Car ownership (0.5.0+) | Works: the friend's helper log showed it following the host's 97 owners, none waiting or missing |
 | Protest damage, the host's only (branch `fix/protest-damage`) | Works (2026-10-26, city copy `mpcheck`): a lamppost destroyed on the friend's game wasn't sent and came back in 7 s; the friend's demolish tool reached the host as `demolish` at once, refund included; the host's own protest damage still reached the friend; no protest banners sent |
-| A friend's car carousel sells nothing (0.5.0+) | In place (`system.VehicleShop.tryBuy` refuses on a friend's game); never seen refusing, because both carousels were empty during the tests |
+| Car carousels: the host's stock, `numSold` and `moneyMade`, each sale repeated (branch `feature/carousel-sync`) | Works (2026-10-29, city copy `carousel2`): 6 of the host's sales were each repeated in the friend's game 0.15 s later, the same buyer getting the same kind of car; stock (kinds and count), `numSold` (65) and `moneyMade` (20478.38) the same on both; the friend's own buyers refused; no cars left standing. The carousel was stocked by hand (`pushItemToStorage`, as a truck does): city `ix` has no factory or car-carrier garage, and its carousel only got cars once, soon after loading |
 
 ## Not shared yet, in the user's order of importance
 
 The user's goals: the statistics first (done), then everything that changes the game's state, especially cars
 entering and leaving lots and drive-thrus, car sales, and protests. 1:1 positions of every pedestrian don't matter.
 
-1. **Car carousel stock and sales (next).** The user wants the friend's carousel to show the host's stock and a sale to
-   happen on both at the same moment, not to show nothing on the friend's side (as now). Facts found:
-   - A carousel is a `CarCarousel` placeable with `VehicleShop`, `Pricing` (`price`, `numSold`, `moneyMade`; these
-     differed between the games: 68 vs 59 sold), `GoodsStorage`, and `VehicleShopEmpty` while it has no stock.
-   - Buying happens in `assets/scripts/behavior/other/car_shopping.lua`, which calls `system.VehicleShop.tryBuy(person,
-     shop)`. `system` is a plain Lua table per room, so the mod can wrap it (it already does, in `lua/cars.lua`).
-   - Lua also gets `system.Goods.getStorageCount`, `popItemFromStorage` and `pushItemToStorage`; stock comes by
-     car-carrier trucks (`CarCarrierGarage`).
-   - Idea: the host's mod reports each purchase (who, which carousel) from its own `tryBuy` wrapper; the friend's mod lets
-     that one purchase through (or makes the car and pops the stock itself), and stock counts are mirrored with the
-     Goods functions.
+1. **Car carousel stock and sales: done** on branch `feature/carousel-sync` (README, "Car carousels show the host's
+   stock"). What was learned, for the next steps:
+   - The stock is real car entities in `GoodsStorage.entitiesPerItem[items.VEHICLE]`, a 10-slot array (one per
+     carriage) with `nil` holes; stock cars have `Transform`, `InStorage`, `Persistent`, `Vehicle`.
+   - The game's `tryBuy` gives the buyer one of those cars (on the map, `OwnedVehicle` set); the buyer then gets
+     `EnterVehicle` and drives off (state 100). It adds 1 to `numSold` and the price to `moneyMade`.
+   - `system.Goods.popItemFromStorage(shop, item)` takes the car in the last full slot, returns only `true`, and
+     leaves the car standing in the world. `pushItemToStorage(shop, item, car)` puts a car in the first empty slot;
+     without a car it adds to the count only, a car nobody can see (avoid).
+   - A friend's buyer who is walking in town gets a car that isn't on the map (as the owners list makes them).
+     Residents given such a car kept walking around normally (state 400) for as long as they were watched (75 s);
+     what they do when they next want to drive wasn't seen.
 2. **Cars entering and leaving lots and drive-thrus**, the cause of the friend's parking income appearing and vanishing.
    - Every car is a resident's own (`OwnedVehicle`/`VehicleOwner`, templates Cabriolet, BananaCar, BubbleCabin, ...),
      the same people by name on both sides. About 10-15 drive at once; people out of town have no `Transform`.
@@ -86,7 +88,7 @@ entering and leaving lots and drive-thrus, car sales, and protests. 1:1 position
   (`Get-CimInstance Win32_Process`). Pause, stats and "apply to all" were each found by snapshotting memory every
   second while the user toggled the thing a few times, then looking for bytes that switch in step.
 - **Tests**: build with `build.ps1 -Out .testrun\bm`, and run a copy of `tests\run.ps1` with `$script:port = 29800`
-  and `-Bin <full path to .testrun\bm>`. 53 scenarios pass on `main`.
+  and `-Bin <full path to .testrun\bm>`. 54 scenarios pass on `feature/carousel-sync` (53 on `main`).
 - **Pitfalls**: Windows PowerShell 5.1 `Get-Content`/`Set-Content` mangle UTF-8 files (README arrows) and add a BOM;
   edit with an editor or a Python script file. Writing a game's memory changes its state for real (a test price of
   0.31 reached the host as a player's change).

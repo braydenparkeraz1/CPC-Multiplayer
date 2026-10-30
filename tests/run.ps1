@@ -916,6 +916,28 @@ function Scenario-CarsHostToClient {
     Expect "a later joiner gets the list after loading" { GameLog $c2 } "cars 1: Bob=Cabriolet" 1 30
 }
 
+function Scenario-CarouselHostToClient {
+    # The host's car carousel: its stock reaches the client's game, each sale on its own and in order, and a
+    # client joining later gets the latest stock (no old sales). A client's own carousel isn't sent anywhere.
+    $s = Start-HostAndClient
+    $key = "CarCarousel@293,8,251/3/0"
+    Game $s.h "carousel $key BananaCar,Cabriolet,Cabriolet 7"
+    Expect "client game gets the stock" { GameLog $s.c } "shop $key stock=BananaCar,Cabriolet,Cabriolet sold=7 sale=-" 1 10
+    Game $s.h "carousel $key Cabriolet,Cabriolet 8 Ann BananaCar"
+    Game $s.h "carousel $key Cabriolet 9 Bob Cabriolet"
+    Expect "the second sale arrives" { GameLog $s.c } "shop $key stock=Cabriolet sold=9 sale=Bob:Cabriolet" 1 10
+    Expect "the first sale isn't lost" { GameLog $s.c } "shop $key stock=Cabriolet,Cabriolet sold=8 sale=Ann:BananaCar" 1 2
+    $log = GameLog $s.c
+    if ($log.IndexOf("sale=Ann:BananaCar") -gt $log.IndexOf("sale=Bob:Cabriolet")) { throw "the sales arrived out of order" }
+    Game $s.c "carousel $key - 3 Cy BananaCar"
+    Start-Sleep -Seconds 2
+    if ((GameLog $s.h) -match "sale=Cy") { throw "the client's sale reached the host's game" }
+    $c2 = New-GameDir "client2"
+    Start-Helper $c2 @("join", "127.0.0.1:$($s.port)", "--name", "Second") | Out-Null
+    Expect "a later joiner gets the latest stock" { GameLog $c2 } "shop $key stock=Cabriolet sold=9 sale=-" 1 30
+    if ((GameLog $c2) -match "sale=Ann") { throw "a later joiner got an old sale" }
+}
+
 function Scenario-StatsHostToClient {
     # Each game's own simulation gives other city statistics; the client's HUD shows the host's.
     $s = Start-SpeedPair
@@ -989,7 +1011,7 @@ $scenarios = @("HelperUnits", "LuaSync",
     "PriceBothEdit", "PriceStaleAtHost", "PriceStaleAtClient",
     "MoneyFound", "MoneyHostToClient", "MoneyHostIncomeFast", "MoneyClientIncomeIgnored", "MoneyClientBuilds", "MoneyBothBuild", "MoneyRefund",
     "MoneyUnpricedBuild", "MoneyHostPaused",
-    "StatsHostToClient", "CarsHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
+    "StatsHostToClient", "CarsHostToClient", "CarouselHostToClient", "SpeedHostToClient", "SpeedClientToHost", "SpeedBothChange", "SpeedClockCatchUp", "SpeedNoLayout",
     "PriceLockedAtHost", "PriceLockedTable", "PriceLockedHidden", "ApplyToAllShared")
 if ($Only) {
     # "-File" passes "A,B" as one string.
