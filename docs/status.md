@@ -7,8 +7,7 @@ The README has the user-facing description of each feature; `docs/probes-0.5.md`
 
 | Branch | State |
 |---|---|
-| `main` (pushed, `bbe06a1`) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/` |
-| `feature/carousel-sync` (worktree `C:\Claude\CPC-MP-carousel`, not merged) | Car carousels: the host's stock, sold counts and each sale in every game |
+| `main` (`bbe06a1` pushed; later merges local) | Everything below: 0.5.0 phase 1, the main menu's Host/Join buttons and LAN discovery, and (merged from `feature/stats-sync`) per-player dev files, city statistics, car ownership, no car sales on a friend's game, pause, "apply to all" boxes and prices, `tools/`; then protest damage (`fix/protest-damage`) and car carousels following the host (`feature/carousel-sync`, merged 2026-10-29) |
 
 The game is installed at `C:\Games\Car Park Capital`. `CPC-Multiplayer-test4.exe` there is the build of `main` as of
 the "apply to all" commit; `CPC-Multiplayer.exe` is an older build, and `-test`, `-test2`, `-test3` are older still (a
@@ -88,7 +87,7 @@ entering and leaving lots and drive-thrus, car sales, and protests. 1:1 position
   (`Get-CimInstance Win32_Process`). Pause, stats and "apply to all" were each found by snapshotting memory every
   second while the user toggled the thing a few times, then looking for bytes that switch in step.
 - **Tests**: build with `build.ps1 -Out .testrun\bm`, and run a copy of `tests\run.ps1` with `$script:port = 29800`
-  and `-Bin <full path to .testrun\bm>`. 54 scenarios pass on `feature/carousel-sync` (53 on `main`).
+  and `-Bin <full path to .testrun\bm>`. 54 scenarios pass on `main`.
 - **Pitfalls**: Windows PowerShell 5.1 `Get-Content`/`Set-Content` mangle UTF-8 files (README arrows) and add a BOM;
   edit with an editor or a Python script file. Writing a game's memory changes its state for real (a test price of
   0.31 reached the host as a player's change).
