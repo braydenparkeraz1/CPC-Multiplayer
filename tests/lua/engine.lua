@@ -14,12 +14,19 @@
 --     copies it onto every object of that kind, as the game does with money.syncedPrices
 --   * people and their cars (Person, Vehicle, VehicleOwner, OwnedVehicle; Transform while in town),
 --     names (getName/setName/getByName), and vehicle templates, which only give a Vehicle component
+--   * car carousels (VehicleShop, Pricing, GoodsStorage with 10 car slots) and system.Goods as measured in the
+--     game: popItemFromStorage takes the car in the last full slot and leaves it standing, pushItemToStorage
+--     puts a car in the first empty slot; tryBuy hands the buyer a car from the stock and counts the sale
 -- Not modelled: paint jobs finish instantly as "ok" if the tile is free.
 local Engine = {}
 Engine.__index = Engine
 
 local COMPONENTS = { "Placeable", "Placed", "Placing", "Persistent", "Demolished", "ParkingEntry", "Pricing",
-    "Person", "Vehicle", "VehicleOwner", "OwnedVehicle", "Transform", "Driver", "VehiclePassenger" }
+    "Person", "Vehicle", "VehicleOwner", "OwnedVehicle", "Transform", "Driver", "VehiclePassenger",
+    "VehicleShop", "GoodsStorage", "InStorage" }
+
+local VEHICLE_ITEM = 2
+local CAROUSEL_SLOTS = 10
 
 -- Templates that make a car rather than a placeable.
 local VEHICLES = { Cabriolet = true, BananaCar = true, BubbleCabin = true }
@@ -122,16 +129,37 @@ function Engine:makeRoom()
     room.setOnDestroyCallback = function() end
     room.tileMapSize = { x = 64, y = 8, z = 64 }
     room.getPricingId = function(name) return w:templateOf("pricing:" .. name) end
-    -- A car carousel that always has stock: the car is the buyer's at once.
+    -- tryBuy: a carousel (spawnCarousel) hands over a car from its stock and counts the sale; any other
+    -- shop entity stands for one that always has stock, and the buyer gets a new car.
     w.sold = 0
+    room.currentRoom = { items = { VEHICLE = VEHICLE_ITEM } }
     room.system = { VehicleShop = { tryBuy = function(person, shop)
-        local v = w:create()
-        w:applyTemplate(v, "Cabriolet", true)
+        local v
+        if w.comps.GoodsStorage[shop] then
+            v = w:lastInStock(shop)
+            if not v then return false end
+            w:popStock(shop)
+            local pricing = w.comps.Pricing[shop]
+            pricing.numSold = pricing.numSold + 1
+            pricing.moneyMade = pricing.moneyMade + pricing.price
+        else
+            v = w:create()
+            w:applyTemplate(v, "Cabriolet", true)
+        end
         w.comps.VehicleOwner[person] = { vehicle = v }
         w.comps.OwnedVehicle[v] = { owner = person }
         w.sold = w.sold + 1
         return true
     end } }
+    room.system.Goods = {
+        getStorageCount = function(e, item)
+            local n = 0
+            for _ in pairs(w:slots(e)) do n = n + 1 end
+            return n
+        end,
+        popItemFromStorage = function(e, item) return w:popStock(e) end,
+        pushItemToStorage = function(e, item, car) return w:pushStock(e, car) end,
+    }
     room.getName = function(e) return w.names[e] end
     room.setName = function(e, name)
         for other, n in pairs(w.names) do
@@ -207,6 +235,74 @@ function Engine:carOf(name)
     local owner = p and self.comps.VehicleOwner[p]
     if not owner or not self.alive[owner.vehicle] then return nil end
     return owner.vehicle, self.comps.Persistent[owner.vehicle].applyTemplateOnLoad
+end
+
+-- A car carousel holding cars of these kinds (in its first slots), as loaded from a save.
+function Engine:spawnCarousel(x, y, z, stock)
+    local e = self:spawnPlaced("CarCarousel", x, y, z, 0, 0)
+    self.comps.VehicleShop[e] = {}
+    self.comps.Pricing[e] = { price = 220, numSold = 0, moneyMade = 0 }
+    local slots = setmetatable({}, { __len = function() return CAROUSEL_SLOTS end })
+    self.comps.GoodsStorage[e] = { entitiesPerItem = { [VEHICLE_ITEM] = slots } }
+    for _, tpl in ipairs(stock or {}) do self:deliver(e, tpl) end
+    return e
+end
+
+function Engine:slots(shop)
+    return self.comps.GoodsStorage[shop].entitiesPerItem[VEHICLE_ITEM]
+end
+
+-- A car-carrier truck brings a new car of this kind.
+function Engine:deliver(shop, tpl)
+    local car = self:create()
+    self.room.applyTemplate(car, tpl, {}, true)
+    self.comps.Transform[car] = {}
+    return self:pushStock(shop, car)
+end
+
+function Engine:pushStock(shop, car)
+    local slots = self:slots(shop)
+    for i = 1, CAROUSEL_SLOTS do
+        if slots[i] == nil then
+            slots[i] = car
+            self.comps.InStorage[car] = { storage = shop }
+            return true
+        end
+    end
+    return false
+end
+
+function Engine:lastInStock(shop)
+    local slots = self:slots(shop)
+    for i = CAROUSEL_SLOTS, 1, -1 do
+        if slots[i] ~= nil then return slots[i], i end
+    end
+    return nil
+end
+
+function Engine:popStock(shop)
+    local car, i = self:lastInStock(shop)
+    if not car then return false end
+    self:slots(shop)[i] = nil
+    self.comps.InStorage[car] = nil
+    return true
+end
+
+-- The kinds of car in the carousel's stock, sorted, as one string.
+function Engine:stockOf(shop)
+    local kinds = {}
+    for _, car in pairs(self:slots(shop)) do kinds[#kinds + 1] = self.comps.Persistent[car].applyTemplateOnLoad end
+    table.sort(kinds)
+    return table.concat(kinds, ",")
+end
+
+-- Cars standing in the world that are in no carousel and nobody's (left over from a pop).
+function Engine:strayCars()
+    local n = 0
+    for v in pairs(self.comps.Vehicle) do
+        if self.alive[v] and not self.comps.InStorage[v] and not self.comps.OwnedVehicle[v] then n = n + 1 end
+    end
+    return n
 end
 
 -- Our player builds something with the build tool: its ghost is there when the object is made.

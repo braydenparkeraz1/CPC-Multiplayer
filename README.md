@@ -42,6 +42,7 @@ What is shared:
 | Pause, game speed, day and time | Anyone pauses or changes the speed for everyone; clocks are kept together (0.5.0) |
 | City statistics: carbrainness, civil unrest, need fulfilment, car dependency progress | The host's, on every HUD (0.5.0) |
 | Who owns which car (and so the car dependency level) | The host's: friends' games give and take real cars to match (0.5.0) |
+| Car carousels: stock, cars sold, money made, each sale | The host's: a sale happens in every game at once, to the same buyer (0.5.0) |
 | Cars, people and protests themselves | **Not shared yet**: each PC simulates its own (see [Not shared yet](#not-shared-yet)) |
 
 ## Build
@@ -246,7 +247,28 @@ Fixes from the first playtest. The protocol changed, so every player needs 0.5.0
     of the room, and on a friend's game the mod's version of it says no. So the sale doesn't flash money that the host's
     wallet never gets, and no car is taken back later; the host's buyers get theirs from the list above.
   - Not covered: people who moved to town in the host's game only (newcomers are random on each PC) are counted and
-    skipped, and the carousel's stock on a friend's game stays as it was (it sells nothing there).
+    skipped.
+- **Car carousels show the host's stock, and each sale happens in every game at once.** A carousel's stock is up to
+  10 real cars (one per carriage, in its `GoodsStorage`), brought by car-carrier trucks; each game's own trucks and
+  buyers made the stock and the "sold" counts drift apart (68 sold on the host, 59 on a friend's game, in one test).
+  - The host's mod reports each carousel's stock (the kinds of car), `numSold` and `moneyMade` when they change
+    (`shop`, checked every 0.5 s), and every sale at once from its `tryBuy` wrapper, with the buyer's name and the
+    kind of car. The host's helper passes these on and keeps the latest state of each carousel for friends who join
+    later (`src/Session/Session.Cars.cs`).
+  - A friend's mod repeats the sale: the buyer gets the same kind of car straight away, made like the owners list
+    makes one, and the carousel loses a car. A buyer who is in a car, or whose own car is out on the map, gets it
+    from the owners list once out of town; a buyer who already has that car gets no second one. Until the host's
+    next owners list arrives, the old one can't take the new car back.
+  - The friend's carousel then holds the same kinds of car as the host's: cars its own trucks bring are taken out
+    and destroyed, and the host's are made and put in (`system.Goods.popItemFromStorage` and `pushItemToStorage`).
+    `numSold` and `moneyMade` are written over with the host's.
+  - The friend's game still sells nothing itself, and the repeated sale doesn't go through the game's purchase, so it
+    costs and earns nothing there: the money is the host's wallet.
+  - Measured in the game (2026-10-29): `tryBuy` hands the buyer one of the stock cars, on the map, adds 1 to
+    `numSold` and the price to `moneyMade`; `popItemFromStorage` takes the car in the last full slot, returns only
+    `true` and leaves that car standing in the world (the mod destroys it); `pushItemToStorage(shop, item, car)`
+    puts a car in the first empty slot. In a test, each of the host's sales was repeated in the friend's game
+    0.15 s later, with the same stock and counts on both.
 - **Protest damage counts once, the host's.** Each game runs its own protests, and protesters wreck street lamps,
   benches, bins and hydrants. A friend's game reported what its protesters wrecked as removals, so the host's city
   lost those too, and the city took the damage of both games' protests (about 60 objects on each side in 80 minutes

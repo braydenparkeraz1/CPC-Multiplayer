@@ -142,6 +142,154 @@ test("a big difference is worked off a few at a time", function()
     eq(n, 45, "all after three checks")
 end)
 
+-- Car carousels -------------------------------------------------------------------------------------------
+
+local SHOP_KEY = "CarCarousel@5,0,5/0/0"
+
+-- A city with a carousel (loaded from the save, so it is indexed once the mod is ready).
+local function cityWithShop(role, people, stock)
+    local w = city(role, people)
+    local shop = w:spawnCarousel(5, 0, 5, stock)
+    w:step(25)
+    w:clearEmitted()
+    return w, shop
+end
+
+local function stockText(list)
+    local t = {}
+    for _, tpl in ipairs(list) do t[#t + 1] = tpl end
+    table.sort(t)
+    return table.concat(t, ",")
+end
+
+test("the host reports a carousel's stock when a truck brings cars, and each sale at once", function()
+    local w = city("host", { Ann = false })
+    local shop = w:spawnCarousel(5, 0, 5, { "Cabriolet" })
+    w:step(25)
+    local sent = w:take("shop")
+    eq(#sent, 1, "first report")
+    eq(sent[1].key, SHOP_KEY, "key")
+    eq(stockText(sent[1].stock), "Cabriolet", "stock")
+    eq(sent[1].sold, 0, "nothing sold yet")
+    w:deliver(shop, "BananaCar")
+    w:step(5)
+    sent = w:take("shop")
+    eq(#sent, 1, "the delivery")
+    eq(stockText(sent[1].stock), "BananaCar,Cabriolet", "two cars")
+    -- Ann buys the last car in: the game's own tryBuy, from the car-shopping behavior.
+    eq(w.room.system.VehicleShop.tryBuy(w.room.getByName("Ann"), shop), true, "sold")
+    sent = w:take("shop")
+    eq(#sent, 1, "reported at once, before the next tick")
+    eq(sent[1].sale.buyer, "Ann", "buyer")
+    eq(sent[1].sale.tpl, "BananaCar", "her car")
+    eq(stockText(sent[1].stock), "Cabriolet", "stock after the sale")
+    eq(sent[1].sold, 1, "numSold")
+    eq(sent[1].made, 220, "moneyMade")
+    w:step(10)
+    eq(#w:take("shop"), 0, "not again")
+end)
+
+test("a friend's carousel gets the host's kinds of car, numSold and moneyMade", function()
+    local w, shop = cityWithShop("client", {}, { "Cabriolet", "Cabriolet", "BubbleCabin" })
+    w:send({ type = "shop", key = SHOP_KEY, stock = { "BananaCar", "Cabriolet", "BananaCar" }, sold = 68, made = 16217.5 })
+    eq(w:stockOf(shop), "BananaCar,BananaCar,Cabriolet", "stock")
+    eq(w.comps.Pricing[shop].numSold, 68, "numSold")
+    eq(w.comps.Pricing[shop].moneyMade, 16217.5, "moneyMade")
+    eq(w:strayCars(), 0, "the cars taken out are gone, not left standing")
+    local status = w:take("shopsync")[1]
+    eq(status.removed, 2, "removed")
+    eq(status.added, 2, "added")
+    -- The friend's own truck brings a car: taken out again within half a second.
+    w:deliver(shop, "BubbleCabin")
+    w:step(5)
+    eq(w:stockOf(shop), "BananaCar,BananaCar,Cabriolet", "own delivery undone")
+    eq(w:strayCars(), 0, "and destroyed")
+end)
+
+test("a sale in the host's game happens in the friend's: the buyer gets the car, the stock drops", function()
+    local w, shop = cityWithShop("client", { Ann = false, Bob = false }, { "BananaCar", "Cabriolet" })
+    w:send({ type = "cars", owners = {} })
+    w:step(3)
+    w:send({ type = "shop", key = SHOP_KEY, stock = { "Cabriolet" }, sold = 1, made = 220,
+        sale = { buyer = "Ann", tpl = "BananaCar" } })
+    local car, tpl = w:carOf("Ann")
+    eq(tpl, "BananaCar", "Ann's car, at once")
+    eq(w.comps.OwnedVehicle[car].owner, w.room.getByName("Ann"), "owned")
+    eq(w:stockOf(shop), "Cabriolet", "one fewer in stock")
+    eq(w.comps.Pricing[shop].numSold, 1, "counted")
+    eq(w:take("shopsync")[1].sale, "given", "status")
+    -- The owners list sent before the sale doesn't take it back; the next one, with Ann, gives no second car.
+    w:step(25)
+    eq(w:carOf("Ann"), car, "kept")
+    w:send({ type = "cars", owners = { Ann = "BananaCar" } })
+    w:step(25)
+    eq(w:carOf("Ann"), car, "the same car")
+    local n = 0
+    for _, o in pairs(w.comps.OwnedVehicle) do if o.owner == w.room.getByName("Ann") then n = n + 1 end end
+    eq(n, 1, "one car")
+end)
+
+test("a buyer who already got the car from the owners list gets no second one", function()
+    local w = cityWithShop("client", { Ann = false }, { "BananaCar" })
+    w:send({ type = "cars", owners = { Ann = "BananaCar" } })
+    w:step(3)
+    local car = w:carOf("Ann")
+    w:send({ type = "shop", key = SHOP_KEY, stock = {}, sold = 1, made = 220, sale = { buyer = "Ann", tpl = "BananaCar" } })
+    eq(w:carOf("Ann"), car, "the same car")
+    eq(w:take("shopsync")[1].sale, "had", "status")
+end)
+
+test("a buyer driving their own car here gets the host's kind once out of town", function()
+    local w, shop = cityWithShop("client", { Bob = "Cabriolet" }, { "BananaCar" })
+    w:send({ type = "cars", owners = { Bob = "Cabriolet" } })
+    w:step(3)
+    local bob, bobCar = w.room.getByName("Bob"), w:carOf("Bob")
+    w.comps.Transform[bob] = {}
+    w.comps.Driver[bob] = { vehicle = bobCar }
+    w.comps.Transform[bobCar] = {}
+    w:send({ type = "shop", key = SHOP_KEY, stock = {}, sold = 1, made = 220, sale = { buyer = "Bob", tpl = "BananaCar" } })
+    eq(w:carOf("Bob"), bobCar, "keeps his car while driving")
+    eq(w:take("shopsync")[1].sale, "waiting", "status")
+    eq(w:stockOf(shop), "", "the stock drops anyway")
+    w:step(25)
+    eq(w:carOf("Bob"), bobCar, "still, though the old owners list says Cabriolet")
+    w.comps.Transform[bob] = nil
+    w.comps.Driver[bob] = nil
+    w.comps.Transform[bobCar] = nil
+    w:step(50)
+    eq(select(2, w:carOf("Bob")), "BananaCar", "swapped once out of town")
+end)
+
+test("a buyer the friend's city doesn't have: only the stock follows", function()
+    local w, shop = cityWithShop("client", {}, { "BananaCar" })
+    w:send({ type = "shop", key = SHOP_KEY, stock = {}, sold = 1, made = 220, sale = { buyer = "Newcomer", tpl = "BananaCar" } })
+    eq(w:stockOf(shop), "", "stock")
+    eq(w:take("shopsync")[1].sale, "missing", "status")
+end)
+
+test("a friend's carousel sells nothing by itself and earns nothing", function()
+    local w, shop = cityWithShop("client", { Ann = false }, { "BananaCar" })
+    w:send({ type = "shop", key = SHOP_KEY, stock = { "BananaCar" }, sold = 5, made = 1100 })
+    eq(w.room.system.VehicleShop.tryBuy(w.room.getByName("Ann"), shop), false, "refused")
+    eq(w:carOf("Ann"), nil, "no car")
+    eq(w:stockOf(shop), "BananaCar", "stock kept")
+    eq(w.comps.Pricing[shop].numSold, 5, "numSold the host's")
+    eq(w.comps.Pricing[shop].moneyMade, 1100, "moneyMade the host's")
+    w:step(10)
+    eq(#w:take("shop"), 0, "a friend reports no carousel")
+end)
+
+test("a carousel the friend's game doesn't have yet gets the host's stock once it is there", function()
+    local w = city("client", {})
+    w:step(25)
+    w:send({ type = "shop", key = SHOP_KEY, stock = { "Cabriolet", "Cabriolet" }, sold = 2, made = 440 })
+    eq(w:take("shopsync")[1].shop ~= nil, true, "noted as not there yet")
+    local shop = w:spawnCarousel(5, 0, 5, {})
+    w:step(10)
+    eq(w:stockOf(shop), "Cabriolet,Cabriolet", "stock")
+    eq(w.comps.Pricing[shop].numSold, 2, "numSold")
+end)
+
 for _, t in ipairs(tests) do
     local ok, err = pcall(t.fn)
     if ok then
